@@ -1,0 +1,8 @@
+pandas
+cmake
+gym
+gym[atari]
+matplotlib
+imageio
+scikit-image
+imageio-ffmpeg 
