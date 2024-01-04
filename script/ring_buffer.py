@@ -26,8 +26,6 @@ class RingBuffer:
             # Convert user indices to ring indices
             idx_start = (idx_start + self.index - self.len) % self.maxlen
             idx_stop = (idx_stop + self.index - self.len) % self.maxlen
-            
-            print(self.index, idx_start, idx_stop)
         
             # Account for slice wrapping around tail of ring
             if idx_start >= idx_stop:
