@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+import pandas as pd
 import numpy as np
 import random
 import imageio
@@ -6,6 +7,8 @@ from skimage.color import rgb2gray
 from skimage.transform import resize
 from tensorflow import image as tf_image
 from tensorflow.keras import backend as K
+from datetime import datetime
+
 import sys
 sys.path.append('../script')
 from atari_model import model_call
@@ -118,3 +121,22 @@ def play_episode(model, env, action_space, state_len):
         episode_reward += reward
     
     return episode_frames, episode_reward 
+
+
+class EpisodeLogger:
+    def __init__(self, fname):
+        self.fname = f'{fname}.csv'
+        self.cols = ['ts', 'episode', 'episode_len', 'frame_num', 'score', 'action_perc', 'action_ran_perc']
+        pd.DataFrame(columns=self.cols).to_csv(self.fname, index=False, header=True)
+
+    def append(self, episode, episode_len, frame_num, reward, actions, a_israns):
+        values = [
+            datetime.utcnow(),
+            episode,
+            episode_len,
+            frame_num,
+            reward,
+            pd.value_counts(actions, normalize=True).round(3).sort_index().to_dict(),
+            np.mean(a_israns)
+        ]
+        pd.DataFrame([values], columns=self.cols, index=[0]).to_csv(self.fname, index=False, header=False, mode='a')
