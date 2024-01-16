@@ -11,7 +11,7 @@ from tensorflow.math import reduce_mean
 
 # TODO: pass in only tensors etc. To avoid retracing.
 @tf.function  # Somehow this causes y_pred to have slightly different decimals
-def train_on_batch(x, y_tgt, model, optimizer, loss_fn, sample_weight=None):
+def train_on_batch(x, y_tgt, model, loss_fn, sample_weight=None):
     """Custom fit function such that we can obtain td-error, w/o having to recompute it.
     
     Assumptions:
@@ -31,7 +31,7 @@ def train_on_batch(x, y_tgt, model, optimizer, loss_fn, sample_weight=None):
         td_error = tf.math.reduce_sum(tf.math.abs(tf.math.subtract(y_tgt, y_pred)), axis=1)
         
     grads = tape.gradient(loss_mean, model.trainable_weights)
-    optimizer.apply_gradients(zip(grads, model.trainable_weights))
+    model.optimizer.apply_gradients(zip(grads, model.trainable_weights))
     return td_error
 
 
@@ -189,7 +189,7 @@ def fit_batch(model, action_space, gamma, state_now, action, reward, game_over, 
 
 def fit_batch_DQN(
         model, model_tgt, action_space, gamma, state_now, action, 
-        reward, game_over, state_next, custom_fit=False,  optimizer=None, loss_fn=None
+        reward, game_over, state_next, custom_fit=False, loss_fn=None
     ):
     """Q-learning update on a batch of transitions."""
     # Reshape variables
@@ -216,7 +216,7 @@ def fit_batch_DQN(
     
     # Run SGD update
     if custom_fit:
-        train_on_batch([state_now, action_ohe], Q_tgt, model, optimizer, loss_fn)
+        train_on_batch([state_now, action_ohe], Q_tgt, model, loss_fn)
     else:
         model.train_on_batch([state_now, action_ohe], Q_tgt)
 
@@ -253,7 +253,7 @@ def fit_batch_DDQN(model, model_tgt, action_space, gamma, state_now, action, rew
 
 def fit_batch_DQNn(
         model, model_tgt, action_space, gamma, state_now, action, 
-        rewards, game_over, state_next, custom_fit=False,  optimizer=None, loss_fn=None
+        rewards, game_over, state_next, custom_fit=False, loss_fn=None
     ):
     """Q-learning update on a batch of transitions.
 
@@ -281,7 +281,7 @@ def fit_batch_DQNn(
 
     # Run SGD update (train_on_batch() is faster than fit())
     if custom_fit:
-        train_on_batch([state_now, action_ohe], Q_tgt, model, optimizer, loss_fn)
+        train_on_batch([state_now, action_ohe], Q_tgt, model, loss_fn)
     else:
         model.train_on_batch([state_now, action_ohe], Q_tgt)
 
@@ -295,7 +295,7 @@ def update_noisy_layers(model):
 
 def fit_batch_DQNn_PER(
         model, model_tgt, action_space, gamma, state_now, action, rewards, 
-        game_over, state_next, w_imps, optimizer, loss_fn, noisy_net=False
+        game_over, state_next, w_imps, loss_fn, noisy_net=False
     ):
     """Q-learning update on a batch of transitions.
 
@@ -328,7 +328,7 @@ def fit_batch_DQNn_PER(
     Q_tgt = np.float32(action_ohe * Q_tgt[:, None])
 
     # Run SGD update
-    td_err = train_on_batch([state_now, action_ohe], Q_tgt, model, optimizer, loss_fn, sample_weight=w_imps)
+    td_err = train_on_batch([state_now, action_ohe], Q_tgt, model, loss_fn, sample_weight=w_imps)
 
     return td_err.numpy()
 
@@ -375,8 +375,7 @@ def fit_batch_DQNn_PER_(
 
 def fit_batch_DDQNn_PER(
         model, model_tgt, action_space, gamma, state_now, action, rewards, 
-        game_over, state_next, w_imps, optimizer, loss_fn, noisy_net=False,
-        double_learn=False
+        game_over, state_next, w_imps, loss_fn, noisy_net=False, double_learn=False
     ):
     """Q-learning update on a batch of transitions.
     Enables features:
@@ -424,7 +423,7 @@ def fit_batch_DDQNn_PER(
     Q_tgt = np.float32(action_ohe * Q_tgt[:, None])
 
     # Run SGD update
-    td_err = train_on_batch([state_now, action_ohe], Q_tgt, model, optimizer, loss_fn, sample_weight=w_imps)
+    td_err = train_on_batch([state_now, action_ohe], Q_tgt, model, loss_fn, sample_weight=w_imps)
 
     return td_err.numpy()
 
