@@ -12,6 +12,19 @@ from tensorflow.math import reduce_mean
 # TODO: pass in only tensors etc. To avoid retracing.
 @tf.function  # Somehow this causes y_pred to have slightly different decimals
 def train_on_batch(x, y_tgt, model, optimizer, loss_fn, sample_weight=None):
+    """Custom fit function such that we can obtain td-error, w/o having to recompute it.
+    
+    Assumptions:
+        1. td_error assumes y_tgt == y_pred for all but one action per data point
+
+    Notes:
+        - Unsure if td_error calc should be within context-mngr. runtime testing wasn't conclusive.
+        - To calc loss for each data point TF takes sum across multiple outputs (in a single output layer).
+        - TF then by default takes mean across losses in batch (across all data points and other remaining dimensions).
+        - We might not want this for our RL purposes, as our intention is to train for only a single action per sample.
+          Thus might make more sense to set "SUM" as `reduction` parameter in the loss object.
+        - This should not affect direction of gradients, but only the magnitude => has interplay with learning-rate.
+    """
     with tf.GradientTape() as tape:
         y_pred = model(x, training=True)  # TODO: figure out whether should be training or not
         loss_mean = loss_fn(y_tgt, y_pred, sample_weight=sample_weight)
@@ -88,8 +101,7 @@ def atari_model(n_actions, lr, kernel_init='glorot_uniform', noisy_net=False):
         256, activation='relu', name='hid', kernel_initializer=kernel_init
     )(conv_flat)
 
-    # Output layer. Q values are masked by actions
-    # so only selected actions have non-0 Q value
+    # Output layer. Q values are masked by actions so only selected actions have non-0 Q value
     output = layer_dense(n_actions, name='Q', kernel_initializer=kernel_init)(hidden)
     output_masked = layers.Multiply(name='Q_masked')([output, input_actions])
 
@@ -359,3 +371,62 @@ def fit_batch_DQNn_PER_(
     # Run SGD update (train_on_batch() is faster than fit())
     model.train_on_batch([state_now, action_ohe], Q_tgt, sample_weight=w_imps)
     return td_err
+
+
+def fit_batch_DDQNn_PER(
+        model, model_tgt, action_space, gamma, state_now, action, rewards, 
+        game_over, state_next, w_imps, optimizer, loss_fn, noisy_net=False,
+        double_learn=False
+    ):
+    """Q-learning update on a batch of transitions.
+    Enables features:
+        - DQN: Deep Q-learning
+        - DDQN: Double DQN
+        - PER: Prioritized experience replay 
+        - Noisy Net layers
+        - n-step returns
+
+    Rewards: R[t+1:t+n] for computing n-step return
+    Assumption: state(t) and state(t+n) do not cross a life lost or game-over
+    """
+    # Reshape variables
+    action_idx = [action_space.index(a) for a in action]  # Convert to indexed actions
+    action_ohe = np.eye(model.output.shape[1])[action_idx]  # OHE encode actions
+    state_now = np.stack(state_now)
+    state_next = np.stack(state_next)
+    rewards = np.stack(rewards)
+    game_over = game_over.tolist()
+
+    # Update noisy layers params
+    if noisy_net:
+        update_noisy_layers(model)
+        update_noisy_layers(model_tgt)
+
+    # Predict Q values of next states, from target model
+    action_ones = np.ones_like(action_ohe)
+    Q_next_tgt = model_call(model_tgt, [state_next, action_ones]).numpy()
+    Q_next_tgt[game_over] = 0  # Q value of terminal state is 0 by definition
+
+    if double_learn:
+        # 1. Get actions that predict highest Q values for next states, from online model
+        # 2. Obtain Q values of max action, from the target model
+        Q_next_onl = model_call(model, [state_next, action_ones]).numpy()
+        Q_next_onl[game_over] = 0  # Q value of terminal state is 0 by definition
+        Q_next_tgt_max = Q_next_tgt[range(Q_next_tgt.shape[0]), Q_next_onl.argmax(axis=1)]
+    else:
+        Q_next_tgt_max = Q_next_tgt.max(axis=1)
+    
+    # Set Q target. We only run SGD updates for those actions taken.
+    # Hence, Q target for non-taken actions is set to 0, as preds for those actions are also 0
+    n = rewards.shape[1]
+    R_n = (gamma ** np.arange(n) * rewards).sum(axis=1)  # n-step forward return
+    Q_tgt = R_n + (gamma ** n) * Q_next_tgt_max
+    Q_tgt = np.float32(action_ohe * Q_tgt[:, None])
+
+    # Run SGD update
+    td_err = train_on_batch([state_now, action_ohe], Q_tgt, model, optimizer, loss_fn, sample_weight=w_imps)
+
+    return td_err.numpy()
+
+
+
