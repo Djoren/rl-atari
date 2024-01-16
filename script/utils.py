@@ -8,10 +8,18 @@ from skimage.transform import resize
 from tensorflow import image as tf_image
 from tensorflow.keras import backend as K
 from datetime import datetime
+import cv2
 
 import sys
 sys.path.append('../script')
 from atari_model import model_call
+
+
+def frame_max_pooling(frames):
+    """Take maximum value for each pixel value across several frames.
+    This is needed to remove flickering in some games where some objects appear in and out in even/odd frames.
+    """
+    return np.max(frames, axis=0)
 
 
 def downsample(frame):
@@ -19,11 +27,19 @@ def downsample(frame):
 
 
 def preprocess_frame_v1(frame):
+    """
+    Note 
+        - for Space Invaders has issues.
+    """
     return downsample(rgb2gray(frame) * 255).astype(np.uint8)
 
 
 def preprocess_frame_v2(frame):
-    """Note for Breakout pixel disappears in starting frames."""
+    """
+    Note 
+        - for Breakout pixel disappears in starting frames.
+        - for Space Invaders has issues.
+    """
     return np.uint8(resize(
         rgb2gray(frame), (105, 80), preserve_range=False, order=0, 
         mode='constant', anti_aliasing=False) * 255
@@ -31,10 +47,20 @@ def preprocess_frame_v2(frame):
 
 
 def preprocess_frame_v3(frame):
+    """
+    Note 
+        - for Space Invaders has issues.
+    """
     frame = tf_image.rgb_to_grayscale(frame)
     # frame = tf_image.crop_to_bounding_box(frame, 34, 0, 160, 160)
     frame = tf_image.resize(frame, (105, 80), method=tf_image.ResizeMethod.NEAREST_NEIGHBOR)
     return frame
+
+
+def preprocess_frame_v4(frame):
+    return np.uint8(
+        cv2.resize(rgb2gray(frame) * 255, (80, 105), interpolation=cv2.INTER_LINEAR)
+    )
 
 
 def clip_reward(reward):
