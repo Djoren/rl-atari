@@ -6,16 +6,18 @@ from tensorflow.keras import layers
 # from tensorflow_addons import layers as layers_tfa
 from noisy_dense import NoisyDense
 from tensorflow.keras.optimizers import RMSprop
+from tensorflow.keras.losses import Huber
 from tensorflow.math import reduce_mean
 
 
 # TODO: pass in only tensors etc. To avoid retracing.
 @tf.function  # Somehow this causes y_pred to have slightly different decimals
-def train_on_batch(x, y_tgt, model, loss_fn, sample_weight=None):
+def train_on_batch(x, y_tgt, model, sample_weight=None):
     """Custom fit function such that we can obtain td-error, w/o having to recompute it.
     
     Assumptions:
         1. td_error assumes y_tgt == y_pred for all but one action per data point
+        2. Model has been passed an optimizer object as argument, not a string.
 
     Notes:
         - Unsure if td_error calc should be within context-mngr. runtime testing wasn't conclusive.
@@ -26,8 +28,8 @@ def train_on_batch(x, y_tgt, model, loss_fn, sample_weight=None):
         - This should not affect direction of gradients, but only the magnitude => has interplay with learning-rate.
     """
     with tf.GradientTape() as tape:
-        y_pred = model(x, training=True)  # TODO: figure out whether should be training or not
-        loss_mean = loss_fn(y_tgt, y_pred, sample_weight=sample_weight)
+        y_pred = model(x, training=True)
+        loss_mean = model.loss(y_tgt, y_pred, sample_weight=sample_weight)
         td_error = tf.math.reduce_sum(tf.math.abs(tf.math.subtract(y_tgt, y_pred)), axis=1)
         
     grads = tape.gradient(loss_mean, model.trainable_weights)
@@ -72,13 +74,13 @@ def td_error(
     return np.abs(Q_tgt - Q_now).sum(axis=1)
 
 
-def atari_model(n_actions, lr, kernel_init='glorot_uniform', noisy_net=False): 
+def atari_model(n_actions, lr, state_shape, kernel_init='glorot_uniform', noisy_net=False): 
     """ n_actions: OHE matrix of actions.
         Note that the 4th action (FIRE) starts the game.
     """
     # Input layers
     input_actions = layers.Input((n_actions,), name='input_actions')
-    input_frames = layers.Input((105, 80, 4), name='input_frames', dtype=tf.float32)
+    input_frames = layers.Input(state_shape, name='input_frames', dtype=tf.float32)
     normed_frames = layers.Lambda(lambda x: tf.cast(x, tf.float32) / 255.0)(input_frames)  # Convert frames uint8[0, 255] to float[0, 1]
     # TODO: more efficient to leave out the 255 at frames processing, and here as well?
 
@@ -108,17 +110,17 @@ def atari_model(n_actions, lr, kernel_init='glorot_uniform', noisy_net=False):
     # Model
     model = keras.Model(inputs=[input_frames, input_actions], outputs=output_masked)
     optimizer = RMSprop(learning_rate=lr, rho=0.95, epsilon=0.01)
-    model.compile(optimizer=optimizer, loss='huber_loss')
+    model.compile(optimizer=optimizer, loss=Huber())
     return model
 
 
-def atari_model_dueling(n_actions, lr, kernel_init='glorot_uniform', noisy_net=False): 
+def atari_model_dueling(n_actions, lr, state_shape, kernel_init='glorot_uniform', noisy_net=False): 
     """ n_actions: OHE matrix of actions.
         Note that the 4th action (FIRE) starts the game.
     """
     # Input layers
     in_actions = layers.Input((n_actions,), name='input_actions')
-    in_frames = layers.Input((105, 80, 4), name='input_frames', dtype=tf.float32)
+    in_frames = layers.Input(state_shape, name='input_frames', dtype=tf.float32)
     normed_frames = layers.Lambda(lambda x: tf.cast(x, tf.float32) / 255.0)(in_frames)  # Convert frames uint8[0, 255] to float[0, 1]
     # TODO: more efficient to leave out the 255 at frames processing, and here as well?
 
@@ -161,7 +163,7 @@ def atari_model_dueling(n_actions, lr, kernel_init='glorot_uniform', noisy_net=F
     # Model
     model = keras.Model(inputs=[in_frames, in_actions], outputs=out_masked)
     optimizer = RMSprop(learning_rate=lr, rho=0.95, epsilon=0.01)
-    model.compile(optimizer=optimizer, loss='huber_loss')
+    model.compile(optimizer=optimizer, loss=Huber())
     return model
 
 
@@ -189,7 +191,7 @@ def fit_batch(model, action_space, gamma, state_now, action, reward, game_over, 
 
 def fit_batch_DQN(
         model, model_tgt, action_space, gamma, state_now, action, 
-        reward, game_over, state_next, custom_fit=False, loss_fn=None
+        reward, game_over, state_next, custom_fit=False
     ):
     """Q-learning update on a batch of transitions."""
     # Reshape variables
@@ -216,7 +218,7 @@ def fit_batch_DQN(
     
     # Run SGD update
     if custom_fit:
-        train_on_batch([state_now, action_ohe], Q_tgt, model, loss_fn)
+        train_on_batch([state_now, action_ohe], Q_tgt, model)
     else:
         model.train_on_batch([state_now, action_ohe], Q_tgt)
 
@@ -253,7 +255,7 @@ def fit_batch_DDQN(model, model_tgt, action_space, gamma, state_now, action, rew
 
 def fit_batch_DQNn(
         model, model_tgt, action_space, gamma, state_now, action, 
-        rewards, game_over, state_next, custom_fit=False, loss_fn=None
+        rewards, game_over, state_next, custom_fit=False
     ):
     """Q-learning update on a batch of transitions.
 
@@ -281,7 +283,7 @@ def fit_batch_DQNn(
 
     # Run SGD update (train_on_batch() is faster than fit())
     if custom_fit:
-        train_on_batch([state_now, action_ohe], Q_tgt, model, loss_fn)
+        train_on_batch([state_now, action_ohe], Q_tgt, model)
     else:
         model.train_on_batch([state_now, action_ohe], Q_tgt)
 
@@ -295,7 +297,7 @@ def update_noisy_layers(model):
 
 def fit_batch_DQNn_PER(
         model, model_tgt, action_space, gamma, state_now, action, rewards, 
-        game_over, state_next, w_imps, loss_fn, noisy_net=False
+        game_over, state_next, w_imps, noisy_net=False
     ):
     """Q-learning update on a batch of transitions.
 
@@ -328,7 +330,7 @@ def fit_batch_DQNn_PER(
     Q_tgt = np.float32(action_ohe * Q_tgt[:, None])
 
     # Run SGD update
-    td_err = train_on_batch([state_now, action_ohe], Q_tgt, model, loss_fn, sample_weight=w_imps)
+    td_err = train_on_batch([state_now, action_ohe], Q_tgt, model, sample_weight=w_imps)
 
     return td_err.numpy()
 
@@ -375,7 +377,7 @@ def fit_batch_DQNn_PER_(
 
 def fit_batch_DDQNn_PER(
         model, model_tgt, action_space, gamma, state_now, action, rewards, 
-        game_over, state_next, w_imps, loss_fn, noisy_net=False, double_learn=False
+        game_over, state_next, w_imps, noisy_net=False, double_learn=False
     ):
     """Q-learning update on a batch of transitions.
     Enables features:
@@ -423,7 +425,7 @@ def fit_batch_DDQNn_PER(
     Q_tgt = np.float32(action_ohe * Q_tgt[:, None])
 
     # Run SGD update
-    td_err = train_on_batch([state_now, action_ohe], Q_tgt, model, loss_fn, sample_weight=w_imps)
+    td_err = train_on_batch([state_now, action_ohe], Q_tgt, model, sample_weight=w_imps)
 
     return td_err.numpy()
 
