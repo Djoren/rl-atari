@@ -74,9 +74,14 @@ def td_error(
     return np.abs(Q_tgt - Q_now).sum(axis=1)
 
 
-def atari_model(n_actions, lr, state_shape, kernel_init='glorot_uniform', noisy_net=False): 
+def atari_model(
+        n_actions, lr, state_shape, kernel_init='glorot_uniform', noisy_net=False, 
+        large_net=False
+    ): 
     """ n_actions: OHE matrix of actions.
-        Note that the 4th action (FIRE) starts the game.
+        
+    Notes: 
+        - that the 4th action (FIRE) starts the game for some games.
     """
     # Input layers
     input_actions = layers.Input((n_actions,), name='input_actions')
@@ -84,24 +89,46 @@ def atari_model(n_actions, lr, state_shape, kernel_init='glorot_uniform', noisy_
     normed_frames = layers.Lambda(lambda x: tf.cast(x, tf.float32) / 255.0)(input_frames)  # Convert frames uint8[0, 255] to float[0, 1]
     # TODO: more efficient to leave out the 255 at frames processing, and here as well?
 
-    # Convolutional layers
-    conv_1 = layers.Conv2D(
-        16, (8, 8), strides=(4, 4), activation='relu', 
-        name='conv1', kernel_initializer=kernel_init
-    )(normed_frames)
-    conv_2 = layers.Conv2D(
-        32, (4, 4), strides=(2, 2), activation='relu', 
-        name='conv2', kernel_initializer=kernel_init
-    )(conv_1)
+    if large_net:
+        # Convolutional layers
+        conv_1 = layers.Conv2D(
+            32, (8, 8), strides=(4, 4), activation='relu', 
+            name='conv1', kernel_initializer=kernel_init
+        )(normed_frames)
+        conv_2 = layers.Conv2D(
+            64, (4, 4), strides=(2, 2), activation='relu', 
+            name='conv2', kernel_initializer=kernel_init
+        )(conv_1)
+        conv_3 = layers.Conv2D(
+            64, (3, 3), strides=(1, 1), activation='relu', 
+            name='conv2', kernel_initializer=kernel_init
+        )(conv_2)
 
-    # Fully connected layers
-    # layer_dense = layers_tfa.NoisyDense if noisy_net else layers.Dense
-    # layer_dense = layers.Dense
-    layer_dense = NoisyDense if noisy_net else layers.Dense
-    conv_flat = layers.Flatten()(conv_2)
-    hidden = layer_dense(
-        256, activation='relu', name='hid', kernel_initializer=kernel_init
-    )(conv_flat)
+        # Fully connected layers
+        layer_dense = NoisyDense if noisy_net else layers.Dense
+        conv_flat = layers.Flatten()(conv_3)
+        hidden = layer_dense(
+            512, activation='relu', name='hid', kernel_initializer=kernel_init
+        )(conv_flat)
+    else:
+        # Convolutional layers
+        conv_1 = layers.Conv2D(
+            16, (8, 8), strides=(4, 4), activation='relu', 
+            name='conv1', kernel_initializer=kernel_init
+        )(normed_frames)
+        conv_2 = layers.Conv2D(
+            32, (4, 4), strides=(2, 2), activation='relu', 
+            name='conv2', kernel_initializer=kernel_init
+        )(conv_1)
+
+        # Fully connected layers
+        # layer_dense = layers_tfa.NoisyDense if noisy_net else layers.Dense
+        # layer_dense = layers.Dense
+        layer_dense = NoisyDense if noisy_net else layers.Dense
+        conv_flat = layers.Flatten()(conv_2)
+        hidden = layer_dense(
+            256, activation='relu', name='hid', kernel_initializer=kernel_init
+        )(conv_flat)
 
     # Output layer. Q values are masked by actions so only selected actions have non-0 Q value
     output = layer_dense(n_actions, name='Q', kernel_initializer=kernel_init)(hidden)
@@ -114,7 +141,10 @@ def atari_model(n_actions, lr, state_shape, kernel_init='glorot_uniform', noisy_
     return model
 
 
-def atari_model_dueling(n_actions, lr, state_shape, kernel_init='glorot_uniform', noisy_net=False): 
+def atari_model_dueling(
+        n_actions, lr, state_shape, kernel_init='glorot_uniform', noisy_net=False, 
+        large_net=False    
+    ): 
     """ n_actions: OHE matrix of actions.
         Note that the 4th action (FIRE) starts the game.
     """
@@ -124,26 +154,50 @@ def atari_model_dueling(n_actions, lr, state_shape, kernel_init='glorot_uniform'
     normed_frames = layers.Lambda(lambda x: tf.cast(x, tf.float32) / 255.0)(in_frames)  # Convert frames uint8[0, 255] to float[0, 1]
     # TODO: more efficient to leave out the 255 at frames processing, and here as well?
 
-    # Convolutional layers
-    conv_1 = layers.Conv2D(
-        16, (8, 8), strides=(4, 4), activation='relu', 
-        name='conv1', kernel_initializer=kernel_init
-    )(normed_frames)
-    conv_2 = layers.Conv2D(
-        32, (4, 4), strides=(2, 2), activation='relu', 
-        name='conv2', kernel_initializer=kernel_init
-    )(conv_1)
+    if large_net:
+        # Convolutional layers
+        conv_1 = layers.Conv2D(
+            32, (8, 8), strides=(4, 4), activation='relu', 
+            name='conv1', kernel_initializer=kernel_init
+        )(normed_frames)
+        conv_2 = layers.Conv2D(
+            64, (4, 4), strides=(2, 2), activation='relu', 
+            name='conv2', kernel_initializer=kernel_init
+        )(conv_1)
+        conv_3 = layers.Conv2D(
+            64, (3, 3), strides=(1, 1), activation='relu', 
+            name='conv2', kernel_initializer=kernel_init
+        )(conv_2)
 
-    # Fully connected layers for both value and advantage streams
-    # layer_dense = layers.Dense
-    layer_dense = NoisyDense if noisy_net else layers.Dense
-    conv_flat = layers.Flatten()(conv_2)
-    hidden_val = layer_dense(
-        256, activation='relu', name='V_hid', kernel_initializer=kernel_init
-    )(conv_flat)
-    hidden_adv = layer_dense(
-        256, activation='relu', name='A_hid', kernel_initializer=kernel_init
-    )(conv_flat)
+        # Fully connected layers for both value and advantage streams
+        layer_dense = NoisyDense if noisy_net else layers.Dense
+        conv_flat = layers.Flatten()(conv_3)
+        hidden_val = layer_dense(
+            512, activation='relu', name='V_hid', kernel_initializer=kernel_init
+        )(conv_flat)
+        hidden_adv = layer_dense(
+            512, activation='relu', name='A_hid', kernel_initializer=kernel_init
+        )(conv_flat)
+    else:
+        # Convolutional layers
+        conv_1 = layers.Conv2D(
+            16, (8, 8), strides=(4, 4), activation='relu', 
+            name='conv1', kernel_initializer=kernel_init
+        )(normed_frames)
+        conv_2 = layers.Conv2D(
+            32, (4, 4), strides=(2, 2), activation='relu', 
+            name='conv2', kernel_initializer=kernel_init
+        )(conv_1)
+
+        # Fully connected layers for both value and advantage streams
+        layer_dense = NoisyDense if noisy_net else layers.Dense
+        conv_flat = layers.Flatten()(conv_2)
+        hidden_val = layer_dense(
+            256, activation='relu', name='V_hid', kernel_initializer=kernel_init
+        )(conv_flat)
+        hidden_adv = layer_dense(
+            256, activation='relu', name='A_hid', kernel_initializer=kernel_init
+        )(conv_flat)
 
     # Output layers for value and advantage streams
     # Advantage layer is masked so only selected actions have non-0 value
