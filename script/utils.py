@@ -5,6 +5,7 @@ from datetime import datetime
 
 import matplotlib.pyplot as plt
 import matplotlib.animation as ani
+from matplotlib.ticker import MultipleLocator
 
 import imageio
 from skimage.transform import resize
@@ -25,6 +26,8 @@ sys.path.append('../script')
 from atari_model import model_call
 
 
+# Defines settings for croping the frames for each game
+# Note that settings are obtained from manual inspection
 FRAME_CROP_SETTINGS = {
     'space_invaders': (slice(10, 200), slice(15, 145))
 }
@@ -32,44 +35,10 @@ FRAME_CROP_SETTINGS = {
 
 def frame_max_pooling(frames):
     """Take maximum value for each pixel value across several frames.
+
     This is needed to remove flickering in some games where some objects appear in and out in even/odd frames.
     """
     return np.max(frames, axis=0)
-
-
-def downsample(frame):
-    return frame[::2, ::2]
-
-
-def preprocess_frame_v1(frame):
-    """
-    Note:
-        - for Space Invaders has issues.
-    """
-    return downsample(rgb2gray(frame) * 255).astype(np.uint8)
-
-
-def preprocess_frame_v2(frame):
-    """
-    Note:
-        - for Breakout pixel disappears in starting frames.
-        - for Space Invaders has issues.
-    """
-    return np.uint8(resize(
-        rgb2gray(frame), (105, 80), preserve_range=False, order=0, 
-        mode='constant', anti_aliasing=False) * 255
-    )
-
-
-def preprocess_frame_v3(frame):
-    """
-    Note:
-        - for Space Invaders has issues.
-    """
-    frame = tf_image.rgb_to_grayscale(frame)
-    # frame = tf_image.crop_to_bounding_box(frame, 34, 0, 160, 160)
-    frame = tf_image.resize(frame, (105, 80), method=tf_image.ResizeMethod.NEAREST_NEIGHBOR)
-    return frame
 
 
 def preprocess_frame_v4(frame, resize_div=2, crop=None):
@@ -87,7 +56,7 @@ def preprocess_frame_v4(frame, resize_div=2, crop=None):
 
 
 def clip_reward(reward):
-    # IS THIS CORRECT? THIS DOESN'T SEEM TO CLIP
+    """Clips rewards to the values {-1, 1}."""
     return np.sign(reward)
 
 
@@ -100,6 +69,7 @@ def get_lin_anneal_eps(i, eps_init, eps_final, n_final):
 
 
 def sample_ran_action(action_space):
+    """Randomly samples an action from action space."""
     return np.random.choice(action_space)
 
 
@@ -131,52 +101,18 @@ def plot_state(state):
 
 
 def frames_to_mp4(opath, frames):
+    """Convert a list of frames (numpy arrays) to mop4 animation."""
     imageio.mimsave(opath, frames, fps=30, macro_block_size=None)
 
 
 def play_episode(model, env, action_space, state_len):
-    # Start a new game (episode)
-    init_frame = env.reset()
-    new_life = True
-    game_over = False
-    epsilon = 0.001
-    
-    # Keep track of episode figures
-    episode_reward = 0
-    episode_frames = [init_frame]
-    
-    # Play episode until game over
-    while not game_over:
-        if new_life:
-            # Start a new life in the game
-            frame, _, _, info = env.step(1)  # Fire to start playing
-            episode_frames.append(frame)
-#             for _ in range(random.randint(1, 5)):
-#                 frame, _, game_over, info = env.step(env.action_space.sample())
-#                 episode_frames.append(frame)
-            
-            lives = info['ale.lives']
-            frame = preprocess_frame_v1(frame)
-            state = np.stack(state_len * [frame], axis=2)
-        else:
-            state = np.append(state[:, :, 1:], frame[:, :, None], axis=2)
-        
-        action = choose_action(action_space, model, state, epsilon)
-        frame, reward, game_over, info = env.step(action)
-        episode_frames.append(frame)
-        
-        # Process env outputs
-        frame = preprocess_frame_v1(frame)
-        new_life = info['ale.lives'] < lives 
-        lives = info['ale.lives']
-         
-        # Increase 
-        episode_reward += reward
-    
-    return episode_frames, episode_reward 
+    # TODO: update this function
+    pass
 
 
 class EpisodeLogger:
+    """Logger class to write episode statistics to a csv file."""
+
     def __init__(self, fname):
         self.fname = f'{fname}.csv'
         self.cols = [
@@ -226,8 +162,8 @@ def run_saliency_map(
     if dueling:
         # Clone model and omit all layers after V and A_adj
         model_clone = tf.keras.Model(
-            inputs = [model.get_layer('input_frames').input], 
-            outputs = [model.get_layer('V').output, model.get_layer('A_adj').output]
+            inputs=[model.get_layer('input_frames').input], 
+            outputs=[model.get_layer('V').output, model.get_layer('A_adj').output]
         )
         score_v = [CategoricalScore([0]), InactiveScore()]
 
@@ -245,8 +181,8 @@ def run_saliency_map(
             sal_list.append(sal)
     else:
         model_clone = tf.keras.Model(
-            inputs = [model.get_layer('input_frames').input], 
-            outputs = [model.get_layer('Q').output]
+            inputs=[model.get_layer('input_frames').input], 
+            outputs=[model.get_layer('Q').output]
         )
 
         sal_list = []
@@ -356,7 +292,56 @@ def animate_episode_sal(
         model, episode_states, episode_frames, episode_actions, 
         episode_Qs, action_space, opath, dueling=False
     ):
-    """Animates an episode with saliency map overlayed on preprocessed frames.
-    """
+    """Animates an episode with saliency map overlayed on preprocessed frames."""
     sals = run_saliency_map(model, episode_states, episode_actions, action_space, dueling=dueling)
     animate_episode(episode_frames, sals, episode_Qs, action_space, opath)
+
+
+def plot_log_stats(df_stats, axes=None):
+    """Plots the logged episode statistics."""
+    rc_cntxt = {
+        'lines.linewidth': 0.75, 'xtick.labelsize': 7, 
+        'ytick.labelsize': 7, 'axes.labelsize': 9
+    }
+    with plt.rc_context(rc_cntxt):
+        if not axes:
+            axes = plt.subplots(8, 1, figsize=(18, 10), sharex=True, sharey=False)[1].flat
+            yfsize = 9
+            axes[0].set_ylabel('Score')
+            axes[1].set_ylabel('Max(cum)')
+            axes[2].set_ylabel('Max(50)')
+            axes[3].set_ylabel('Mean(50)')
+            axes[4].set_ylabel('Episode len. (EL)')
+            axes[5].set_ylabel('Mean-max Q')
+            axes[6].set_ylabel('Runtime(s) / EL')
+            axes[7].set_ylabel('Runtime(h)')
+        
+            axes[-1].xaxis.set_major_locator(MultipleLocator(500))
+
+        epis_len = df_stats['frame_num'].diff()
+
+        df_stats['score'].plot(ax=axes[0])
+        df_stats['score'].expanding().max().plot(ax=axes[1])
+        df_stats['score'].rolling(50).max().plot(ax=axes[2])
+        df_stats['score'].rolling(50).mean().plot(ax=axes[3])
+        epis_len.rolling(50).mean().plot(ax=axes[4])
+        df_stats['mean_max_Q'].plot(ax=axes[5])
+        (df_stats['runtime_h_d'] * 3600 / epis_len).plot(ax=axes[6])
+        df_stats['runtime_h'].plot(ax=axes[7])
+
+    return axes
+
+
+def plot_set_xlim(axes, xlim):
+    """Sets xlim for a plot and auto-adjust ylim accordingly."""
+    plt.xlim(*xlim)
+
+    for ax in axes:
+        ax_ymin = []
+        ax_ymax = []
+        for line in ax.get_lines():
+            x, y = line.get_data()
+            y_sub = y[xlim[0] : xlim[1]]
+            ax_ymin.append(y_sub.min())
+            ax_ymax.append(y_sub.max())
+        ax.set_ylim(np.min(ax_ymin) * 0.95, np.max(ax_ymax) * 1.05)
