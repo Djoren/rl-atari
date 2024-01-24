@@ -8,8 +8,6 @@ import matplotlib.animation as ani
 from matplotlib.ticker import MultipleLocator
 
 import imageio
-from skimage.transform import resize
-from tensorflow import image as tf_image
 import cv2
 
 import tensorflow as tf
@@ -23,7 +21,7 @@ from tf_keras_vis.utils.scores import CategoricalScore, InactiveScore
 
 import sys
 sys.path.append('../script')
-from atari_model import model_call
+from atari_model import model_call, Q_from_Z_distr
 
 
 # Defines settings for croping the frames for each game
@@ -73,7 +71,7 @@ def sample_ran_action(action_space):
     return np.random.choice(action_space)
 
 
-def choose_action(action_space, model, state, eps, ret_stats=False):
+def choose_action(action_space, model, state, eps, ret_stats=False, distr_net=False, Z=None):
     """Eps-greedy policy.
     
     Assumptions:
@@ -85,7 +83,11 @@ def choose_action(action_space, model, state, eps, ret_stats=False):
         return (a, True, Q) if ret_stats else a
     else:
         action_all = np.ones_like(action_space)  # all actions OHE encoded
-        Q = model_call(model, [state[None, :], action_all[None, :]]).numpy()[0]
+        if distr_net:
+            p = model_call(model, state[None, :]).numpy()[0]
+            Q = Q_from_Z_distr(Z, p)
+        else:
+            Q = model_call(model, [state[None, :], action_all[None, :]]).numpy()[0]
         a = action_space[Q.argmax()]
         return (a, False, Q) if ret_stats else a
 
@@ -139,7 +141,7 @@ class EpisodeLogger:
 
 
 def run_saliency_map(
-        model, states, actions, action_space, alpha=2, dueling=False, 
+        model, states, actions, action_space, alpha=2, dueling_net=False, 
         sal_type='sal', sal_kwargs=None
     ):
     """Computes saliency maps for a sequence of states.
@@ -159,7 +161,7 @@ def run_saliency_map(
     elif sal_type == 'scam':
         sal_obj = Scorecam
     
-    if dueling:
+    if dueling_net:
         # Clone model and omit all layers after V and A_adj
         model_clone = tf.keras.Model(
             inputs=[model.get_layer('input_frames').input], 
@@ -189,7 +191,7 @@ def run_saliency_map(
         for i, s in enumerate(states):
             s_input = s[None, :].astype('float32')
             max_a = action_space.index(actions[i])
-            score = [InactiveScore(), CategoricalScore([max_a])]
+            score = [CategoricalScore([max_a])]
             sal = sal_obj(model_clone)(score, s_input, **sal_kwargs)
 
             # Combine maps to RGB image. Display only last frame from each state
@@ -290,10 +292,10 @@ def animate_episode(frames, frames_pp, Qs, action_labels, opath):
 
 def animate_episode_sal(
         model, episode_states, episode_frames, episode_actions, 
-        episode_Qs, action_space, opath, dueling=False
+        episode_Qs, action_space, opath, dueling_net=False
     ):
     """Animates an episode with saliency map overlayed on preprocessed frames."""
-    sals = run_saliency_map(model, episode_states, episode_actions, action_space, dueling=dueling)
+    sals = run_saliency_map(model, episode_states, episode_actions, action_space, dueling_net=dueling_net)
     animate_episode(episode_frames, sals, episode_Qs, action_space, opath)
 
 
@@ -304,19 +306,19 @@ def plot_log_stats(df_stats, axes=None):
         'ytick.labelsize': 7, 'axes.labelsize': 9
     }
     with plt.rc_context(rc_cntxt):
-        if not axes:
-            axes = plt.subplots(8, 1, figsize=(18, 10), sharex=True, sharey=False)[1].flat
-            yfsize = 9
+        if axes is None:
+            fig, axes = plt.subplots(8, 1, figsize=(18, 10), sharex=True, sharey=False)
             axes[0].set_ylabel('Score')
             axes[1].set_ylabel('Max(cum)')
             axes[2].set_ylabel('Max(50)')
             axes[3].set_ylabel('Mean(50)')
-            axes[4].set_ylabel('Episode len. (EL)')
+            axes[4].set_ylabel('Epis len (EL) mean(50)')
             axes[5].set_ylabel('Mean-max Q')
-            axes[6].set_ylabel('Runtime(s) / EL')
+            axes[6].set_ylabel('Runtime(ms) / EL')
             axes[7].set_ylabel('Runtime(h)')
         
             axes[-1].xaxis.set_major_locator(MultipleLocator(500))
+            fig.align_ylabels(axes)
 
         epis_len = df_stats['frame_num'].diff()
 
@@ -326,7 +328,7 @@ def plot_log_stats(df_stats, axes=None):
         df_stats['score'].rolling(50).mean().plot(ax=axes[3])
         epis_len.rolling(50).mean().plot(ax=axes[4])
         df_stats['mean_max_Q'].plot(ax=axes[5])
-        (df_stats['runtime_h_d'] * 3600 / epis_len).plot(ax=axes[6])
+        (df_stats['runtime_h_d'] * 3600 * 1000 / epis_len).plot(ax=axes[6])
         df_stats['runtime_h'].plot(ax=axes[7])
 
     return axes
