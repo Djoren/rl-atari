@@ -42,6 +42,19 @@ def model_call(model, inputs):
     return model(inputs)
 
 
+def abs_td_error(y_pred, y_tgt, distr=False, Z=None):
+    """Compute TD-error for predicted Q vs target Q.
+    
+    Used for setting priorities in Prioritized Experience Replay.
+    TODO: Z should be class attribute when we OOP all this code.
+    """
+    # If distributive target convert p to Q
+    if distr:
+        y_pred = Q_from_Z_distr(Z, y_pred)
+        y_tgt = Q_from_Z_distr(Z, y_tgt)
+    return np.sum(np.abs(y_tgt - y_pred), axis=0)
+
+
 def Q_from_Z_distr(Z, p):
     """Computes the estimate Q_hat from Z distribution."""
     return np.sum(Z * p, axis=-1)
