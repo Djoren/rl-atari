@@ -30,11 +30,10 @@ def train_on_batch(x, y_tgt, model, sample_weight=None):
     with tf.GradientTape() as tape:
         y_pred = model(x, training=True)
         loss_mean = model.loss(y_tgt, y_pred, sample_weight=sample_weight)
-        td_error = tf.math.reduce_sum(tf.math.abs(tf.math.subtract(y_tgt, y_pred)), axis=1)
         
     grads = tape.gradient(loss_mean, model.trainable_weights)
     model.optimizer.apply_gradients(zip(grads, model.trainable_weights))
-    return td_error
+    return y_pred
 
 
 # TODO: This seems like it's faster, but unsure if there's risk of issues
