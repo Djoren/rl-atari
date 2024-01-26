@@ -39,13 +39,13 @@ def frame_max_pooling(frames):
     return np.max(frames, axis=0)
 
 
-def preprocess_frame_v4(frame, resize_div=2, crop=None):
+def preprocess_frame_v4(frame, crop_lims=None, resize_div=2):
     """Preprocess a single frame to format agent will ingest.
 
     TODO: can also try AREA, supposed to work well
     """
-    if crop:
-        frame = frame[crop[0], crop[1]]
+    if crop_lims:
+        frame = frame[crop_lims[0], crop_lims[1]]
 
     frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)  # Faster than skimage
     new_shape = tuple(d // resize_div for d in frame.shape)[::-1]
@@ -71,7 +71,7 @@ def sample_ran_action(action_space):
     return np.random.choice(action_space)
 
 
-def choose_action(action_space, model, state, eps, ret_stats=False, distr_net=False, Z=None):
+def choose_action(model, state, action_space, eps, distr_net=False, Z=None, ret_stats=False):
     """Eps-greedy policy.
     
     Assumptions:
@@ -81,13 +81,13 @@ def choose_action(action_space, model, state, eps, ret_stats=False, distr_net=Fa
         a = sample_ran_action(action_space)
         Q = np.array(len(action_space) * [np.nan]) 
         return (a, True, Q) if ret_stats else a
-    else:
-        action_all = np.ones_like(action_space)  # all actions OHE encoded
+    else:        
         if distr_net:
             p = model_call(model, state[None, :]).numpy()[0]
             Q = Q_from_Z_distr(Z, p)
         else:
-            Q = model_call(model, [state[None, :], action_all[None, :]]).numpy()[0]
+            Q = model_call(model, state[None, :]).numpy()[0]
+
         a = action_space[Q.argmax()]
         return (a, False, Q) if ret_stats else a
 
@@ -141,8 +141,8 @@ class EpisodeLogger:
 
 
 def run_saliency_map(
-        model, states, actions, action_space, alpha=2, dueling_net=False, 
-        sal_type='sal', sal_kwargs=None
+        model, states, actions, action_space, dueling_net=False, 
+        sal_type='sal', sal_kwargs=None, alpha=2
     ):
     """Computes saliency maps for a sequence of states.
     
@@ -292,10 +292,12 @@ def animate_episode(frames, frames_pp, Qs, action_labels, opath):
 
 def animate_episode_sal(
         model, episode_states, episode_frames, episode_actions, 
-        episode_Qs, action_space, opath, dueling_net=False
+        episode_Qs, action_space, opath, dueling_net=False, sal_type='sal', sal_kwargs=None
     ):
     """Animates an episode with saliency map overlayed on preprocessed frames."""
-    sals = run_saliency_map(model, episode_states, episode_actions, action_space, dueling_net=dueling_net)
+    sals = run_saliency_map(
+        model, episode_states, episode_actions, action_space, dueling_net, sal_type, sal_kwargs
+    )
     animate_episode(episode_frames, sals, episode_Qs, action_space, opath)
 
 
