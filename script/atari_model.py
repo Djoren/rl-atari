@@ -12,27 +12,41 @@ from tensorflow.math import reduce_mean
 
 # TODO: pass in only tensors etc. To avoid retracing.
 @tf.function  # Somehow this causes y_pred to have slightly different decimals
-def train_on_batch(x, y_tgt, model, sample_weight=None):
+def train_on_batch(model, x, y_tgt, actions, distr_net=False, sample_weight=None):
     """Custom fit function such that we can obtain td-error, w/o having to recompute it.
     
     Assumptions:
-        1. The sum in td_error assumes y_tgt == y_pred for all but one action per data point.
-        2. Model has been passed an optimizer object as argument, not a string.
+        1. Model has been passed an optimizer object as argument, not a string.
 
     Notes:
-        - Unsure if td_error calc should be within context-mngr. runtime testing wasn't conclusive.
-        - To calc loss for each data point TF takes sum across multiple outputs (in a single output layer).
-        - TF then by default takes mean across losses in batch (across all data points and other remaining dimensions).
+        - To calc loss for each sample: TF takes some form of mean across the output dimension (axis=-1).
+          E.g. for MAE it's mean, for cat. cross-entropy it's the sum.
+        - TF then by default takes mean across losses for all other dimensions. The name `sum_over_batch_size` seems like a misnomer,
+          because it actually divides by the sum of size of all other dimenions but the output dimension.
         - We might not want this for our RL purposes, as our intention is to train for only a single action per sample.
-          Thus might make more sense to set "SUM" as `reduction` parameter in the loss object.
+          It might make more sense to take the NOT take the mean across the outputs, but instead a sum. 
+          And then divide by true batch size, i.e. first dimension (axis=1).
         - This should not affect direction of gradients, but only the magnitude => has interplay with learning-rate.
+        
     """
+     # Forward pass
     with tf.GradientTape() as tape:
         y_pred = model(x, training=True)
+
+        # Set target such that updates are only executed for those actions taken,
+        # i.e. one action per each sample
+        shape = y_tgt.get_shape()
+        indices = tf.stack([tf.range(shape[0]), actions], axis=1)
+        if distr_net:
+            y_tgt = tf.scatter_nd(indices, y_tgt, shape)  # Set all but the update values to 0
+        else:
+            y_tgt = tf.tensor_scatter_nd_update(y_pred, indices, y_tgt)  # Set all but the update values to y_pred
         loss_mean = model.loss(y_tgt, y_pred, sample_weight=sample_weight)
         
+    # Backward pass
     grads = tape.gradient(loss_mean, model.trainable_weights)
     model.optimizer.apply_gradients(zip(grads, model.trainable_weights))
+    
     return y_pred
 
 
@@ -42,35 +56,33 @@ def model_call(model, inputs):
     return model(inputs)
 
 
+def Q_from_Z_distr(Z, p):
+    """Computes the estimate Q_hat from Z distribution."""
+    return np.sum(Z * p, axis=-1)
+
+
 def abs_td_error(y_pred, y_tgt, distr=False, Z=None):
     """Compute TD-error for predicted Q vs target Q.
     
     Used for setting priorities in Prioritized Experience Replay.
     TODO: Z should be class attribute when we OOP all this code.
     """
-    # If distributive target convert p to Q
+    # If distributive target convert p_Z to Q
     if distr:
         y_pred = Q_from_Z_distr(Z, y_pred)
         y_tgt = Q_from_Z_distr(Z, y_tgt)
-    return np.sum(np.abs(y_tgt - y_pred), axis=0)
-
-
-def Q_from_Z_distr(Z, p):
-    """Computes the estimate Q_hat from Z distribution."""
-    return np.sum(Z * p, axis=-1)
+    return np.abs(y_tgt - y_pred)
 
 
 def atari_model(
         n_actions, lr, state_shape, kernel_init='glorot_uniform', noisy_net=False, 
         large_net=False
     ): 
-    """ n_actions: OHE matrix of actions.
-        
+    """ 
     Notes: 
         - that the 4th action (FIRE) starts the game for some games.
     """
     # Input layers
-    input_actions = layers.Input((n_actions,), name='input_actions')
     input_frames = layers.Input(state_shape, name='input_frames', dtype=tf.float32)
     normed_frames = layers.Lambda(lambda x: tf.cast(x, tf.float32) / 255.0)(input_frames)  # Convert frames uint8[0, 255] to float[0, 1]
     # TODO: more efficient to leave out the 255 at frames processing, and here as well?
@@ -118,12 +130,12 @@ def atari_model(
 
     # Output layer. Q values are masked by actions so only selected actions have non-0 Q value
     output = layer_dense(n_actions, name='Q', kernel_initializer=kernel_init)(hidden)
-    output_masked = layers.Multiply(name='Q_masked')([output, input_actions])
 
-    # Model
-    model = keras.Model(inputs=[input_frames, input_actions], outputs=output_masked)
+    # Set model
+    model = keras.Model(inputs=input_frames, outputs=output)
     optimizer = RMSprop(learning_rate=lr, rho=0.95, epsilon=0.01)
     model.compile(optimizer=optimizer, loss=Huber())
+    
     return model
 
 
@@ -135,7 +147,6 @@ def atari_model_dueling(
         Note that the 4th action (FIRE) starts the game.
     """
     # Input layers
-    in_actions = layers.Input((n_actions,), name='input_actions')
     in_frames = layers.Input(state_shape, name='input_frames', dtype=tf.float32)
     normed_frames = layers.Lambda(lambda x: tf.cast(x, tf.float32) / 255.0)(in_frames)  # Convert frames uint8[0, 255] to float[0, 1]
     # TODO: more efficient to leave out the 255 at frames processing, and here as well?
@@ -197,19 +208,21 @@ def atari_model_dueling(
     out_adv_adj = layers.Subtract(name='A_adj')([out_adv, out_adv_avg])
 
     # Combine both outputs to estimate Q values
-    out = layers.Add(name='Q')([out_val, out_adv_adj])
-    out_masked = layers.Multiply(name='Q_masked')([out, in_actions])
+    output = layers.Add(name='Q')([out_val, out_adv_adj])
 
     # Model
-    model = keras.Model(inputs=[in_frames, in_actions], outputs=out_masked)
+    model = keras.Model(inputs=in_frames, outputs=output)
     optimizer = RMSprop(learning_rate=lr, rho=0.95, epsilon=0.01)
     model.compile(optimizer=optimizer, loss=Huber())
     return model
 
 
-def atari_model_distr(N, n_actions, lr, kernel_init='glorot_uniform', noisy_net=False): 
+def atari_model_distr(
+        N_atoms, N_actions, lr, state_shape, kernel_init='glorot_uniform', 
+        noisy_net=False, large_net=False
+    ): 
     # Input layers
-    input_frames = layers.Input((105, 80, 4), name='input_frames', dtype=tf.float32)
+    input_frames = layers.Input(state_shape, name='input_frames', dtype=tf.float32)
     normed_frames = layers.Lambda(lambda x: tf.cast(x, tf.float32) / 255.0)(input_frames)  # Convert frames uint8[0, 255] to float[0, 1]
 
     # Convolutional layers
@@ -221,8 +234,6 @@ def atari_model_distr(N, n_actions, lr, kernel_init='glorot_uniform', noisy_net=
     )(conv_1)
 
     # Fully connected layers
-    # layer_dense = layers_tfa.NoisyDense if noisy_net else layers.Dense
-    # layer_dense = layers.Dense
     layer_dense = NoisyDense if noisy_net else layers.Dense
     conv_flat = layers.Flatten()(conv_2)
     hidden = layer_dense(
@@ -231,14 +242,16 @@ def atari_model_distr(N, n_actions, lr, kernel_init='glorot_uniform', noisy_net=
 
     # Output layers Z(a) for every action
     outputs = []
-    for i in range(n_actions):
-        output_a = layer_dense(N, activation='softmax', name=f'Z_{i}', kernel_initializer=kernel_init)(hidden)
-        output_a = layers.Reshape((1, N))(output_a)
+    for i in range(N_actions):
+        output_a = layer_dense(N_atoms, activation='softmax', name=f'Z_{i}', kernel_initializer=kernel_init)(hidden)
+        output_a = layers.Reshape((1, N_atoms))(output_a)
         outputs.append(output_a)
     output = layers.Concatenate(name='Z_concat', axis=1)(outputs)
 
-    # Model
-    model = keras.Model(inputs=[input_frames], outputs=output)
+    # Set model
+    # Note: tf cross-entropy can handle float dtype for y_true
+    #       and  computes CE across the axis=1 by default
+    model = keras.Model(inputs=input_frames, outputs=output)
     optimizer = RMSprop(learning_rate=lr, rho=0.95, epsilon=0.01)
     model.compile(optimizer=optimizer, loss=CategoricalCrossentropy())
 
@@ -249,7 +262,7 @@ def compute_distr_target(model, states, Z, Z_rep, dZ, V_min, V_max, N, rewards, 
     """Computes the new target Z-distribution probabilities."""
     p = model(states).numpy()  # Predicted Z-distr. probabilities for model inputs
     Q = Q_from_Z_distr(Z, p)  # Get pred Q from Z-distr.
-    a_max = Q.argmax(axis=1)  
+    a_max = Q.argmax(axis=1) # TODO: IS THIS WRONG??????????????????????????????????????????????????????????????????????????????????????????? 
     p_max = p[range(p.shape[0]), a_max]  # Subset of p matrix: per data point only the action that maxes Q(a)
 
     # Compute distributional bellman update -> TZ
@@ -263,7 +276,6 @@ def compute_distr_target(model, states, Z, Z_rep, dZ, V_min, V_max, N, rewards, 
     # Assign new weighted (target) probs to p matrix
     # Keeping probs of the non-selected (non-Q-maxing) actions fixed 
     p[range(p.shape[0]), a_max] = np.dot(p_max, w_project)
-    
     return p
 
 
@@ -489,16 +501,17 @@ def fit_batch_DDQNn_PER(
         6. Distributional Net TODO: implement this
 
     Rewards: R[t+1:t+n] for computing n-step return
+
     Assumptions: 
-        - state(t) and state(t+n) do not cross a life lost or game-over
+        1. state(t) and state(t+n) do not cross a life lost or game-over
     """
     # Reshape variables
-    action_idx = [action_space.index(a) for a in action]  # Convert to indexed actions
-    action_ohe = np.eye(model.output.shape[1])[action_idx]  # OHE encode actions
+    action_idx = np.array([action_space.index(a) for a in action], dtype='int32')  # Convert to indexed actions
     state_now = np.stack(state_now)
     state_next = np.stack(state_next)
     rewards = np.stack(rewards)
     game_over = game_over.tolist()
+    batch_sz = state_now.shape[0]
 
     # Update noisy layers params
     if noisy_net:
@@ -506,30 +519,73 @@ def fit_batch_DDQNn_PER(
         update_noisy_layers(model_tgt)
 
     # Predict Q values of next states, from target model
-    action_ones = np.ones_like(action_ohe)
-    Q_next_tgt = model_call(model_tgt, [state_next, action_ones]).numpy()
+    Q_next_tgt = model_call(model_tgt, state_next).numpy()
     Q_next_tgt[game_over] = 0  # Q value of terminal state is 0 by definition
 
     if double_learn:
         # 1. Get actions that predict highest Q values for next states, from online model
         # 2. Obtain Q values of max action, from the target model
-        Q_next_onl = model_call(model, [state_next, action_ones]).numpy()
+        Q_next_onl = model_call(model, state_next).numpy()
         Q_next_onl[game_over] = 0  # Q value of terminal state is 0 by definition
-        Q_next_tgt_max = Q_next_tgt[range(Q_next_tgt.shape[0]), Q_next_onl.argmax(axis=1)]
+        Q_next_tgt_max = Q_next_tgt[range(batch_sz), Q_next_onl.argmax(axis=1)]
     else:
         Q_next_tgt_max = Q_next_tgt.max(axis=1)
     
-    # Set Q target. We only run SGD updates for those actions taken.
-    # Hence, Q target for non-taken actions is set to 0, as preds for those actions are also 0
+    # Set Q target. We only want to run SGD updates for those actions taken
     n = rewards.shape[1]
     R_n = (gamma ** np.arange(n) * rewards).sum(axis=1)  # n-step forward return
-    Q_tgt = R_n + (gamma ** n) * Q_next_tgt_max
-    Q_tgt = np.float32(action_ohe * Q_tgt[:, None])
+    Q_now_tgt = np.float32(R_n + (gamma ** n) * Q_next_tgt_max)  # Has dims (batch_sz, 1)
 
-    # Run SGD update
-    td_err = train_on_batch([state_now, action_ohe], Q_tgt, model, sample_weight=w_imps)
+    # Run SGD update and compute TD-error
+    Q_now_pred = train_on_batch(model, state_now, Q_now_tgt, action_idx, sample_weight=w_imps).numpy()
+    Q_now_pred = Q_now_pred[range(batch_sz), action_idx] # Remove actions that were not taken
+    td_err = abs_td_error(Q_now_pred, Q_now_tgt)
 
-    return td_err.numpy()
+    return td_err
+
+
+# def fit_batch_DDQNn_PER_DS(
+#         model, model_tgt, action_space, gamma, state_now, action, rewards, 
+#         game_over, state_next, w_imps, noisy_net=False, double_learn=False
+#     ):
+#     """Q-learning update on a batch of transitions."""
+#     # Reshape variables
+#     state_now = np.stack(state_now)
+#     state_next = np.stack(state_next)
+#     rewards = np.stack(rewards)
+#     game_over = game_over.tolist()
+
+#     # Update noisy layers params
+#     if noisy_net:
+#         update_noisy_layers(model)
+#         update_noisy_layers(model_tgt)
+
+#     # Predict Q values of next states, from target model
+#     p_next_tgt = model_call(model_tgt, state_next).numpy()
+#     p_next_tgt[game_over] = 0  # Q value of terminal state is 0 by definition
+
+#     if double_learn:
+#         # 1. Get actions that predict highest Q values for next states, from online model
+#         # 2. Obtain Q values of max action, from the target model
+#         p_next_onl = model_call(model, state_next).numpy()
+#         p_next_onl[game_over] = 0  # Q value of terminal state is 0 by definition
+#         p_next_tgt_max = p_next_tgt[range(p_next_tgt.shape[0]), p_next_onl.argmax(axis=1)]
+#     else:
+#         p_next_tgt_max = p_next_tgt.max(axis=1)
+
+#     p_tgt = compute_distr_target(model, states, Z, Z_rep, dZ, V_min, V_max, N, rewards, gamma)
+    
+#     # Set Q target. We only run SGD updates for those actions taken.
+#     # Hence, Q target for non-taken actions is set to 0, as preds for those actions are also 0
+#     n = rewards.shape[1]
+#     R_n = (gamma ** np.arange(n) * rewards).sum(axis=1)  # n-step forward return
+#     p_tgt = R_n + (gamma ** n) * p_next_tgt_max
+
+#    # Run SGD update
+#     p_pred = train_on_batch(model, state_now, p_ tgt,sample_weight=w_imps)
+#     td_err = abs_td_error(p_pred, p_tgt, True, Z)
+
+#     return td_err
 
 
 
