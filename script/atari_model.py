@@ -12,7 +12,7 @@ from tensorflow.math import reduce_mean
 
 # TODO: pass in only tensors etc. To avoid retracing.
 @tf.function  # Somehow this causes y_pred to have slightly different decimals
-def train_on_batch(model, x, y_tgt, actions, distr_net=False, sample_weight=None):
+def train_on_batch(model, x, y_tgt, actions, tgt_zeroing=False, sample_weight=None):
     """Custom fit function such that we can obtain td-error, w/o having to recompute it.
     
     Assumptions:
@@ -35,19 +35,18 @@ def train_on_batch(model, x, y_tgt, actions, distr_net=False, sample_weight=None
 
         # Set target such that updates are only executed for those actions taken,
         # i.e. one action per each sample
-        shape = y_tgt.get_shape()
+        shape = y_pred.get_shape()
         indices = tf.stack([tf.range(shape[0]), actions], axis=1)
-        if distr_net:
+        if tgt_zeroing:
             y_tgt = tf.scatter_nd(indices, y_tgt, shape)  # Set all but the update values to 0
         else:
             y_tgt = tf.tensor_scatter_nd_update(y_pred, indices, y_tgt)  # Set all but the update values to y_pred
-        loss_mean = model.loss(y_tgt, y_pred, sample_weight=sample_weight)
+        loss = model.loss(y_tgt, y_pred, sample_weight=sample_weight)
         
     # Backward pass
-    grads = tape.gradient(loss_mean, model.trainable_weights)
+    grads = tape.gradient(loss, model.trainable_weights)
     model.optimizer.apply_gradients(zip(grads, model.trainable_weights))
-    
-    return y_pred
+    return y_pred, loss
 
 
 # TODO: This seems like it's faster, but unsure if there's risk of issues
@@ -61,14 +60,14 @@ def Q_from_Z_distr(Z, p):
     return np.sum(Z * p, axis=-1)
 
 
-def abs_td_error(y_pred, y_tgt, distr=False, Z=None):
+def abs_td_error(y_pred, y_tgt, distr_net=False, Z=None):
     """Compute TD-error for predicted Q vs target Q.
     
     Used for setting priorities in Prioritized Experience Replay.
     TODO: Z should be class attribute when we OOP all this code.
     """
     # If distributive target convert p_Z to Q
-    if distr:
+    if distr_net:
         y_pred = Q_from_Z_distr(Z, y_pred)
         y_tgt = Q_from_Z_distr(Z, y_tgt)
     return np.abs(y_tgt - y_pred)
@@ -243,10 +242,10 @@ def atari_model_distr(
     # Output layers Z(a) for every action
     outputs = []
     for i in range(N_actions):
-        output_a = layer_dense(N_atoms, activation='softmax', name=f'Z_{i}', kernel_initializer=kernel_init)(hidden)
+        output_a = layer_dense(N_atoms, activation='softmax', name=f'p_{i}', kernel_initializer=kernel_init)(hidden)
         output_a = layers.Reshape((1, N_atoms))(output_a)
         outputs.append(output_a)
-    output = layers.Concatenate(name='Z_concat', axis=1)(outputs)
+    output = layers.Concatenate(name='p_concat', axis=1)(outputs)
 
     # Set model
     # Note: tf cross-entropy can handle float dtype for y_true
@@ -254,29 +253,7 @@ def atari_model_distr(
     model = keras.Model(inputs=input_frames, outputs=output)
     optimizer = RMSprop(learning_rate=lr, rho=0.95, epsilon=0.01)
     model.compile(optimizer=optimizer, loss=CategoricalCrossentropy())
-
     return model
-
-
-def compute_distr_target(model, states, Z, Z_rep, dZ, V_min, V_max, N, rewards, gamma):
-    """Computes the new target Z-distribution probabilities."""
-    p = model(states).numpy()  # Predicted Z-distr. probabilities for model inputs
-    Q = Q_from_Z_distr(Z, p)  # Get pred Q from Z-distr.
-    a_max = Q.argmax(axis=1) # TODO: IS THIS WRONG??????????????????????????????????????????????????????????????????????????????????????????? 
-    p_max = p[range(p.shape[0]), a_max]  # Subset of p matrix: per data point only the action that maxes Q(a)
-
-    # Compute distributional bellman update -> TZ
-    TZ = rewards + gamma * Z  # Applying distr. belman operator T^pi
-    TZ = np.clip(TZ, V_min, V_max)  # Bound update to support of Z, [V_min, V_max]
-
-    # Project bellman update onto support of TZ -> Phi TZ
-    TZ_rep = np.repeat([TZ], N, axis=0).T
-    w_project = np.clip(1 - np.abs(TZ_rep - Z_rep) / dZ, 0, None)  # Projection weights to distribute TZ probs to Z
-    
-    # Assign new weighted (target) probs to p matrix
-    # Keeping probs of the non-selected (non-Q-maxing) actions fixed 
-    p[range(p.shape[0]), a_max] = np.dot(p_max, w_project)
-    return p
 
 
 def fit_batch(model, action_space, gamma, state_now, action, reward, game_over, state_next):
@@ -537,55 +514,77 @@ def fit_batch_DDQNn_PER(
     Q_now_tgt = np.float32(R_n + (gamma ** n) * Q_next_tgt_max)  # Has dims (batch_sz, 1)
 
     # Run SGD update and compute TD-error
-    Q_now_pred = train_on_batch(model, state_now, Q_now_tgt, action_idx, sample_weight=w_imps).numpy()
-    Q_now_pred = Q_now_pred[range(batch_sz), action_idx] # Remove actions that were not taken
+    Q_now_pred, loss = train_on_batch(model, state_now, Q_now_tgt, action_idx, sample_weight=w_imps)
+    Q_now_pred = Q_now_pred.numpy()[range(batch_sz), action_idx] # Remove actions that were not taken
     td_err = abs_td_error(Q_now_pred, Q_now_tgt)
+    return td_err, loss
 
-    return td_err
 
+def fit_batch_DDQNn_PER_DS(
+        model, model_tgt, action_space, gamma, state_now, action, rewards, 
+        game_over, state_next, w_imps, Z, Z_repN, dZ, V, tgt_zeroing, noisy_net=False, 
+        double_learn=False
+    ):
+    """Q-learning update on a batch of transitions."""
+    # Reshape variables
+    action_idx = np.array([action_space.index(a) for a in action], dtype='int32')  # Convert to indexed actions
+    state_now = np.stack(state_now)
+    state_next = np.stack(state_next)
+    rewards = np.stack(rewards)
+    game_over = game_over.astype('bool')
+    batch_sz = state_now.shape[0]
+    N = Z.shape[0]
 
-# def fit_batch_DDQNn_PER_DS(
-#         model, model_tgt, action_space, gamma, state_now, action, rewards, 
-#         game_over, state_next, w_imps, noisy_net=False, double_learn=False
-#     ):
-#     """Q-learning update on a batch of transitions."""
-#     # Reshape variables
-#     state_now = np.stack(state_now)
-#     state_next = np.stack(state_next)
-#     rewards = np.stack(rewards)
-#     game_over = game_over.tolist()
+    # Update noisy layers params
+    if noisy_net:
+        update_noisy_layers(model)
+        update_noisy_layers(model_tgt)
 
-#     # Update noisy layers params
-#     if noisy_net:
-#         update_noisy_layers(model)
-#         update_noisy_layers(model_tgt)
+    # Predict Q values of next states, from target model
+    p_next_tgt = model_call(model_tgt, state_next).numpy()
 
-#     # Predict Q values of next states, from target model
-#     p_next_tgt = model_call(model_tgt, state_next).numpy()
-#     p_next_tgt[game_over] = 0  # Q value of terminal state is 0 by definition
-
-#     if double_learn:
-#         # 1. Get actions that predict highest Q values for next states, from online model
-#         # 2. Obtain Q values of max action, from the target model
-#         p_next_onl = model_call(model, state_next).numpy()
-#         p_next_onl[game_over] = 0  # Q value of terminal state is 0 by definition
-#         p_next_tgt_max = p_next_tgt[range(p_next_tgt.shape[0]), p_next_onl.argmax(axis=1)]
-#     else:
-#         p_next_tgt_max = p_next_tgt.max(axis=1)
-
-#     p_tgt = compute_distr_target(model, states, Z, Z_rep, dZ, V_min, V_max, N, rewards, gamma)
+    if double_learn:
+        p_next_onl = model_call(model, state_next).numpy()
+        Q_next_onl = Q_from_Z_distr(Z, p_next_onl)
+        Q_next_onl[game_over] = 0
+        p_next_tgt_max = p_next_tgt[range(batch_sz), Q_next_onl.argmax(axis=1)]
+    else:
+        Q_next_tgt = Q_from_Z_distr(Z, p_next_tgt)
+        Q_next_tgt[game_over] = 0
+        p_next_tgt_max = p_next_tgt[range(batch_sz), Q_next_tgt.argmax(axis=1)]
     
-#     # Set Q target. We only run SGD updates for those actions taken.
-#     # Hence, Q target for non-taken actions is set to 0, as preds for those actions are also 0
-#     n = rewards.shape[1]
-#     R_n = (gamma ** np.arange(n) * rewards).sum(axis=1)  # n-step forward return
-#     p_tgt = R_n + (gamma ** n) * p_next_tgt_max
+    n = rewards.shape[1]
+    R_n = (gamma ** np.arange(n) * rewards).sum(axis=1)[:, None]  # n-step forward return
+    TZ = R_n + (gamma ** n) * Z * ~game_over[:, None]
+    TZ = np.clip(TZ, *V)
+    w = np.clip(1 - np.abs(np.repeat([TZ.T], N, axis=0).T - Z_repN) / dZ, 0, None)
+    p_now_tgt = np.float32((p_next_tgt_max[..., None] * w).sum(axis=1))
 
-#    # Run SGD update
-#     p_pred = train_on_batch(model, state_now, p_ tgt,sample_weight=w_imps)
-#     td_err = abs_td_error(p_pred, p_tgt, True, Z)
+   # Run SGD update
+    p_now_pred, loss = train_on_batch(
+        model, state_now, p_now_tgt, action_idx, tgt_zeroing, sample_weight=w_imps
+    )
+    p_now_pred = p_now_pred.numpy()[range(batch_sz), action_idx] # Remove actions that were not taken
+    td_err = abs_td_error(p_now_pred, p_now_tgt, distr_net=True, Z=Z)
+    return td_err, loss
 
-#     return td_err
 
+def compute_distr_target(model, states, Z, Z_rep, dZ, V_min, V_max, N, rewards, gamma):
+    """Computes the new target Z-distribution probabilities."""
+    p = model(states).numpy()  # Predicted Z-distr. probabilities for model inputs
+    Q = Q_from_Z_distr(Z, p)  # Get pred Q from Z-distr.
+    a_max = Q.argmax(axis=1)
+    p_max = p[range(p.shape[0]), a_max]  # Subset of p matrix: per data point only the action that maxes Q(a)
 
+    # Compute distributional bellman update -> TZ
+    TZ = rewards + gamma * Z  # Applying distr. belman operator T^pi
+    TZ = np.clip(TZ, V_min, V_max)  # Bound update to support of Z, [V_min, V_max]
 
+    # Project bellman update onto support of TZ -> Phi TZ
+    TZ_rep = np.repeat([TZ], N, axis=0).T
+    w_project = np.clip(1 - np.abs(TZ_rep - Z_rep) / dZ, 0, None)  # Projection weights to distribute TZ probs to Z
+    
+    # Assign new weighted (target) probs to p matrix
+    # Keeping probs of the non-selected (non-Q-maxing) actions fixed 
+    p[range(p.shape[0]), a_max] = np.dot(p_max, w_project)
+    return p
