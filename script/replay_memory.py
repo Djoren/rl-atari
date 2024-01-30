@@ -65,8 +65,9 @@ class UniformReplayMemory(RingBuffer):
         return random.sample(range(self.N_lower_bound, self.len), 1)[0]
 
     def get_sample(self, sample_size):
-        """Note: samples indices correspond to the next state, not current state.
-                 Samples without replacement.
+        """
+        Note: Sample indices correspond to the next state, not current state.
+              Samples without replacement.
         
         n: used for multi-step learning, to get n-step return.
         """        

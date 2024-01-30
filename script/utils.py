@@ -80,16 +80,18 @@ def choose_action(model, state, action_space, eps, distr_net=False, Z=None, ret_
     if random.random() < eps:
         a = sample_ran_action(action_space)
         Q = np.array(len(action_space) * [np.nan]) 
-        return (a, True, Q) if ret_stats else a
+        pZ = np.array(len(action_space) * [len(Z) * [np.nan]]) 
+        return (a, True, Q, pZ) if ret_stats else a
     else:        
         if distr_net:
-            p = model_call(model, state[None, :]).numpy()[0]
-            Q = Q_from_Z_distr(Z, p)
+            pZ = model_call(model, state[None, :]).numpy()[0]
+            Q = Q_from_Z_distr(Z, pZ)
         else:
             Q = model_call(model, state[None, :]).numpy()[0]
+            pZ = None
 
         a = action_space[Q.argmax()]
-        return (a, False, Q) if ret_stats else a
+        return (a, False, Q, pZ) if ret_stats else a
 
 
 def plot_state(state):
@@ -119,13 +121,13 @@ class EpisodeLogger:
         self.fname = f'{fname}.csv'
         self.cols = [
             'ts', 'episode', 'train_cnt', 'frame_num', 'score', 
-            'action_perc', 'action_ran_perc', 'mean_max_Q'
+            'action_perc', 'action_ran_perc', 'mean_max_Q', 'mean_loss'
         ]
         pd.DataFrame(columns=self.cols).to_csv(self.fname, index=False, header=True)
 
     def append(
             self, episode, train_cnt, frame_num, reward, actions, 
-            a_israns, Qs
+            a_israns, Qs, loss
         ):
         values = [
             datetime.utcnow(),
@@ -135,13 +137,14 @@ class EpisodeLogger:
             reward,
             pd.value_counts(actions, normalize=True).round(3).sort_index().to_dict(),
             np.mean(a_israns),
-            np.nanmean(np.max(Qs, axis=1))
+            np.nanmean(np.max(Qs, axis=1)), 
+            loss / train_cnt if train_cnt > 0 else np.nan,
         ]
         pd.DataFrame([values], columns=self.cols, index=[0]).to_csv(self.fname, index=False, header=False, mode='a')
 
 
 def run_saliency_map(
-        model, states, actions, action_space, dueling_net=False, 
+        model, states, actions, action_space, dueling_net=False, distr_net=False,
         sal_type='sal', sal_kwargs=None, alpha=2
     ):
     """Computes saliency maps for a sequence of states.
@@ -181,6 +184,23 @@ def run_saliency_map(
             # Action-sal is red, frame is gree, Value-sal is blue
             sal = np.stack([sal_a[0] ** alpha] + [s[...,-1] / 255.0] + [sal_v[0] ** alpha], axis=2)
             sal_list.append(sal)
+    elif distr_net:
+        model_clone = tf.keras.Model(
+            inputs=[model.get_layer('input_frames').input], 
+            outputs=[model.get_layer('p_concat').output]
+        )
+
+        sal_list = []
+        for i, s in enumerate(states):
+            s_input = s[None, :].astype('float32')
+            max_a = action_space.index(actions[i])
+            score = lambda output: output[:, max_a, :] # AFAIK takes mean across probs when computing grads
+            sal = sal_obj(model_clone)(score, s_input, **sal_kwargs)
+
+            # Combine maps to RGB image. Display only last frame from each state
+            sal = np.stack([sal[0] ** alpha] + [s[...,-1] / 255.0] + [s[...,-1] / 255.0], axis=2)
+            sal_list.append(sal)
+                
     else:
         model_clone = tf.keras.Model(
             inputs=[model.get_layer('input_frames').input], 
@@ -195,22 +215,13 @@ def run_saliency_map(
             sal = sal_obj(model_clone)(score, s_input, **sal_kwargs)
 
             # Combine maps to RGB image. Display only last frame from each state
-            # Action-sal is red, frame is gree, Value-sal is blue
             sal = np.stack([sal[0] ** alpha] + [s[...,-1] / 255.0] + [s[...,-1] / 255.0], axis=2)
             sal_list.append(sal)
     
     return sal_list
 
 
-def animate_episode(frames, frames_pp, Qs, action_labels, opath):
-    """Outputs mp4 animation of a set (e.g. an episode) of frames.
-
-    Per frame it displays:
-        1. Raw game frame
-        2. Preprocessed game frame (as agent sees it)
-        3. Full series of max Q(a)
-        4. Distribution of Q(a)
-    """
+def animate_episode(frames, frames_pp, Qs, action_labels, opath, Z_distr=None):
     fig = plt.Figure(figsize=(9, 6))  # Somehow much faster than 'plt.figure'
 
     for param in ['text.color', 'axes.labelcolor', 'xtick.color', 'ytick.color']:
@@ -230,7 +241,7 @@ def animate_episode(frames, frames_pp, Qs, action_labels, opath):
     ax1.set_yticks([])
 
     # Initial image of preprocessed frames
-    ax4 = fig.add_axes([img_x0 + img_w + d, 0.24, img_w, 0.76])
+    ax4 = fig.add_axes([img_x0 + img_w + d, 0.24, img_w, 0.75])
     img2 = ax4.imshow(frames_pp[0], animated=True)
     ax4.set_xlabel(None)
     ax4.set_xticks([])
@@ -240,22 +251,50 @@ def animate_episode(frames, frames_pp, Qs, action_labels, opath):
     ax2 = fig.add_axes([0.11, 0.145, .76, 0.105])
     max_q_series = [np.max(q) for q in Qs]
     ax2.plot(max_q_series, color='#FE53BB', lw=.5, animated=True)
-    ax2.axhline(0, ls=':', lw=0.5, color='grey', alpha=.5, animated=True)
+    # ax2.axhline(0, ls=':', lw=0.5, color='grey', alpha=.5, animated=True)
     span = ax2.axvspan(0, 0, facecolor='#08F7FE', alpha=.1, animated=True)
     vline = ax2.axvline(0, color='#08F7FE', lw=.5, animated=True)
-    q_txt = ax2.text(.96, .90, 0, ha='right', va='top', transform=ax2.transAxes, fontsize=6, color='#FE53BB')
+    q_txt = ax2.text(.98, .90, 0, ha='right', va='top', transform=ax2.transAxes, fontsize=5, color='#08F7FE')
     ax2.set_title('Max Q-value', x=0.5, y=0.70, fontsize=6, color='#00ff41')
     ax2.set_xticks([])
     ax2.tick_params(labelsize=5)
 
-    # Initial bar plot episode-wise Q(a) distribution
+    # Initial plot of episode-wise Q(a)/Z(a) distribution
     ax3 = fig.add_axes([0.11, 0.04, .76, 0.105])
-    p_prior = 1 / len(action_labels)
-    init_qs = np.array(len(action_labels) * [1])
-    bar = ax3.bar(action_labels, init_qs / np.sum(init_qs), color='#08F7FE', animated=True)
-    ax3.axhline(p_prior, ls=':', lw=0.5, color='grey', alpha=.5, animated=True)
-    ax3.set_title('Q-values', x=0.5, y=0.70, fontsize=6, color='#00ff41')
-    ax3.set_ylim(.50 * p_prior, 2 * p_prior)
+    if Z_distr:
+        q_vlines = []
+        Z_steps = []
+        Z, pZ = Z_distr
+        # Z_colors = sns.color_palette('Set2', len(action_labels))
+        Z_colors = [
+            '#00ff9f',
+            '#00b8ff',
+            '#001eff',
+            '#d600ff',
+            '#024059',
+            '#F96CFF',
+        ]
+
+        for pZ_a, Q, c in zip(pZ[0], Qs[0], Z_colors):
+            Z_step, = ax3.step(x=Z, y=pZ_a, where='post', animated=True, lw=0.5, color=c)
+            q_vline = ax3.axvline(Q, animated=True, lw=0.5, color=c, ymax=0.075)
+            Z_steps.append(Z_step)
+            q_vlines.append(q_vline)
+        ax3.set_title('Z-distribution', x=0.5, y=0.70, fontsize=6, color='#00ff41')
+        ylim = np.nanmax([p.max() for p in pZ]) * 1.05
+        ax3.set_ylim(0, ylim if ylim is np.nan else 1)
+        ax3.legend(
+            Z_steps, action_labels, loc='upper left', fontsize=4, handlelength=1.5, 
+            columnspacing=1, frameon=False, ncols=len(action_labels)
+        )
+        z_txt = ax3.text(.98, .90, 0, ha='right', va='top', transform=ax3.transAxes, fontsize=5, color='#08F7FE')
+    else:
+        p_prior = 1 / len(action_labels)
+        init_qs = np.array(len(action_labels) * [1])
+        bar = ax3.bar(action_labels, init_qs / np.sum(init_qs), color='#08F7FE', animated=True)
+        ax3.axhline(p_prior, ls=':', lw=0.5, color='grey', alpha=.5, animated=True)
+        ax3.set_title('Q-values', x=0.5, y=0.70, fontsize=6, color='#00ff41')
+        ax3.set_ylim(.50 * p_prior, 2 * p_prior)
     ax3.tick_params(labelsize=5)
 
     for loc in ['top', 'bottom', 'left', 'right']:
@@ -273,15 +312,23 @@ def animate_episode(frames, frames_pp, Qs, action_labels, opath):
         img2.set_array(frames_pp[i])
         vline.set_xdata(i)
         span.set_xy([[0, 0], [0, 1], [i, 1], [i, 0]])
-        for j, b in enumerate(bar):
-            b.set_height(Qs_norm[i][j])
         
-        bar[animate.a_max].set_color('#08F7FE')  # Set old max to def color
-        animate.a_max = np.argmax(Qs_norm[i])
-        bar[animate.a_max].set_color('#024A4C')  # Set new max to max color
-        q_txt.set_text(Qs[i].max().round(1))
+        if Z_distr:
+            for a, (Z_step, q_vline) in enumerate(zip(Z_steps, q_vlines)):
+                Z_step.set_ydata(pZ[i][a])
+                q_vline.set_xdata(Qs[i][a])
+            art_ls = Z_steps + q_vlines
+            z_txt.set_text(Qs[i].round(1))
+        else:
+            for j, b in enumerate(bar):
+                b.set_height(Qs_norm[i][j])
+            bar[animate.a_max].set_color('#08F7FE')  # Set old max to def color
+            animate.a_max = np.argmax(Qs_norm[i])
+            bar[animate.a_max].set_color('#024A4C')  # Set new max to max color
+            q_txt.set_text(Qs[i].max().round(1))
+            art_ls = list(bar)
 
-        return [img, vline, span, q_txt] + list(bar)
+        return [img, vline, span, q_txt] + art_ls
 
     animate.a_max = 0  # Add function attribute
     an = ani.FuncAnimation(fig, animate, frames=len(frames), blit=False) # Blit seems to make it slower
@@ -292,13 +339,15 @@ def animate_episode(frames, frames_pp, Qs, action_labels, opath):
 
 def animate_episode_sal(
         model, episode_states, episode_frames, episode_actions, 
-        episode_Qs, action_space, opath, dueling_net=False, sal_type='sal', sal_kwargs=None
+        episode_Qs, action_space, opath, dueling_net=False, distr_net=False, Z_distr=None, 
+        sal_type='sal', sal_kwargs=None
     ):
     """Animates an episode with saliency map overlayed on preprocessed frames."""
     sals = run_saliency_map(
-        model, episode_states, episode_actions, action_space, dueling_net, sal_type, sal_kwargs
+        model, episode_states, episode_actions, action_space, dueling_net, 
+        distr_net, sal_type, sal_kwargs
     )
-    animate_episode(episode_frames, sals, episode_Qs, action_space, opath)
+    animate_episode(episode_frames, sals, episode_Qs, action_space, opath, Z_distr)
 
 
 def plot_log_stats(df_stats, axes=None):
