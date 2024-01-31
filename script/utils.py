@@ -121,13 +121,14 @@ class EpisodeLogger:
         self.fname = f'{fname}.csv'
         self.cols = [
             'ts', 'episode', 'train_cnt', 'frame_num', 'score', 
-            'action_perc', 'action_ran_perc', 'mean_max_Q', 'mean_loss'
+            'action_perc', 'action_ran_perc', 'mean_max_Q', 'mean_loss',
+            'mean_tderr'
         ]
         pd.DataFrame(columns=self.cols).to_csv(self.fname, index=False, header=True)
 
     def append(
             self, episode, train_cnt, frame_num, reward, actions, 
-            a_israns, Qs, loss
+            a_israns, Qs, loss, td_err
         ):
         values = [
             datetime.utcnow(),
@@ -138,7 +139,8 @@ class EpisodeLogger:
             pd.value_counts(actions, normalize=True).round(3).sort_index().to_dict(),
             np.mean(a_israns),
             np.nanmean(np.max(Qs, axis=1)), 
-            loss / train_cnt if train_cnt > 0 else np.nan,
+            np.mean(loss),
+            np.mean(td_err)
         ]
         pd.DataFrame([values], columns=self.cols, index=[0]).to_csv(self.fname, index=False, header=False, mode='a')
 
@@ -200,7 +202,6 @@ def run_saliency_map(
             # Combine maps to RGB image. Display only last frame from each state
             sal = np.stack([sal[0] ** alpha] + [s[...,-1] / 255.0] + [s[...,-1] / 255.0], axis=2)
             sal_list.append(sal)
-                
     else:
         model_clone = tf.keras.Model(
             inputs=[model.get_layer('input_frames').input], 
@@ -363,10 +364,10 @@ def plot_log_stats(df_stats, axes=None):
             axes[1].set_ylabel('Max(cum)')
             axes[2].set_ylabel('Max(50)')
             axes[3].set_ylabel('Mean(50)')
-            axes[4].set_ylabel('Epis len (EL) mean(50)')
+            axes[4].set_ylabel('Epis len mean(50)')
             axes[5].set_ylabel('Mean-max Q')
-            axes[6].set_ylabel('Runtime(ms) / EL')
-            axes[7].set_ylabel('Runtime(h)')
+            axes[6].set_ylabel('Time(ms) / EL')
+            axes[7].set_ylabel('Time(h)')
         
             axes[-1].xaxis.set_major_locator(MultipleLocator(500))
             fig.align_ylabels(axes)
