@@ -80,7 +80,7 @@ def choose_action(model, state, action_space, eps, distr_net=False, Z=None, ret_
     if random.random() < eps:
         a = sample_ran_action(action_space)
         Q = np.array(len(action_space) * [np.nan]) 
-        pZ = np.array(len(action_space) * [len(Z) * [np.nan]]) 
+        pZ = Z if Z is None else np.array(len(action_space) * [len(Z) * [np.nan]]) 
         return (a, True, Q, pZ) if ret_stats else a
     else:        
         if distr_net:
