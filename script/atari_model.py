@@ -217,7 +217,7 @@ def atari_model_dueling(
 
 
 def atari_model_distr(
-        N_atoms, N_actions, lr, state_shape, kernel_init='glorot_uniform', 
+        N_atoms, N_actions, loss, lr, state_shape, kernel_init='glorot_uniform', 
         noisy_net=False, large_net=False
     ): 
     # Input layers
@@ -252,7 +252,7 @@ def atari_model_distr(
     #       and  computes CE across the axis=1 by default
     model = keras.Model(inputs=input_frames, outputs=output)
     optimizer = RMSprop(learning_rate=lr, rho=0.95, epsilon=0.01)
-    model.compile(optimizer=optimizer, loss=CategoricalCrossentropy())
+    model.compile(optimizer=optimizer, loss=loss)
     return model
 
 
@@ -566,6 +566,7 @@ def fit_batch_DDQNn_PER_DS(
     )
     p_now_pred = p_now_pred.numpy()[range(batch_sz), action_idx] # Remove actions that were not taken
     td_err = abs_td_error(p_now_pred, p_now_tgt, distr_net=True, Z=Z)
+    loss = loss.numpy()[0]
     return td_err, loss
 
 
