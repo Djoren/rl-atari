@@ -369,7 +369,7 @@ def plot_log_stats(df_stats, axes=None):
             axes[6].set_ylabel('Time(ms) / EL')
             axes[7].set_ylabel('Time(h)')
         
-            axes[-1].xaxis.set_major_locator(MultipleLocator(500))
+            axes[-1].xaxis.set_major_locator(MultipleLocator(100000))
             fig.align_ylabels(axes)
 
         epis_len = df_stats['frame_num'].diff()

@@ -34,13 +34,14 @@ class SegmentTree(ABC):
         self.app_idx = (self.app_idx + 1) % self.n_leaves
 
     def update(self, idx, val):
+        """Note: iteration is slightly faster than recursion."""
         self.tree[idx] = val
-        if idx != 0:
-            idx_parent = (idx - 1) // 2
-            val_child_l = self.tree[idx_parent * 2 + 1]
-            val_child_r = self.tree[idx_parent * 2 + 2]
+        while idx != 0:
+            idx = (idx - 1) // 2
+            val_child_l = self.tree[idx * 2 + 1]
+            val_child_r = self.tree[idx * 2 + 2]
             val_parent = self._tree_operator(val_child_l, val_child_r)
-            self.update(idx_parent, val_parent)
+            self.tree[idx] = val_parent
 
 
 class SumTree(SegmentTree):

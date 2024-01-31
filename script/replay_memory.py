@@ -109,6 +109,7 @@ class PrioritizedReplayMemory(UniformReplayMemory):
         self.p_new_mem = 1  # Init priority given to newly stored memories
         self.alpha = alpha  # Exponent of priority probabilities
         self.beta = beta  # Exponent of importance sampling weights
+        self._lower_bound_idxs = np.arange(self.N_lower_bound)
 
     def get_priority_prob(self, p):
         return p / self.priorities.get_total_sum()
@@ -154,7 +155,7 @@ class PrioritizedReplayMemory(UniformReplayMemory):
             self.p_maxtree.append(-np.inf)
             self.p_mintree.append(np.inf)
         else:
-            self.priorities.append(self.p_new_mem ) # TODO: no need for alpha exponent here [?]
+            self.priorities.append(self.p_new_mem) # TODO: no need for alpha exponent here [?]
             self.p_maxtree.append(self.p_new_mem)
             self.p_mintree.append(self.p_new_mem)
 
@@ -163,13 +164,13 @@ class PrioritizedReplayMemory(UniformReplayMemory):
 
     def _zero_out_lower_memories(self):
         """Excludes all memories below lowerbound from sampling."""
-        idxs = self.buffer_idx_to_tree_idx(np.arange(self.N_lower_bound))
+        idxs = self.buffer_idx_to_tree_idx(self._lower_bound_idxs)
         for idx in idxs:
             self.priorities.update(idx, 0)
             self.p_maxtree.update(idx, -np.inf)
             self.p_mintree.update(idx, np.inf)
 
-    def update_priority(self, buff_idx, p):
+    def _update_priority(self, buff_idx, p):
         # Map buffer index to tree index
         idx = self.buffer_idx_to_tree_idx(buff_idx)
 
@@ -178,14 +179,14 @@ class PrioritizedReplayMemory(UniformReplayMemory):
         self.priorities.update(idx, p)
         self.p_maxtree.update(idx, p)
         self.p_mintree.update(idx, p)
+
+    def update_priorities(self, idxs, ps):
+        for idx, p in zip(idxs, ps):
+            self._update_priority(idx, p)
         self._zero_out_lower_memories()
 
         # Update the priority given to new memories
         self.p_new_mem = max(self.p_new_mem, self.p_maxtree.get_max())
-
-    def update_priorities(self, idxs, ps):
-        for idx, p in zip(idxs, ps):
-            self.update_priority(idx, p)
 
     def buffer_idx_to_leaf_idx(self, buff_idx):
         return (buff_idx + self.priorities.app_idx) % self.len
@@ -198,8 +199,8 @@ class PrioritizedReplayMemory(UniformReplayMemory):
         return self.priorities.leaf_to_tree_index(idx)
 
     def _get_ran_index(self):
-        idxs_excl = np.arange(self.N_lower_bound)
-        leaf_idxs_excl = self.buffer_idx_to_leaf_idx(idxs_excl)
+        idxs_excl = self._lower_bound_idxs
+        leaf_idxs_excl = self.buffer_idx_to_leaf_idx(idxs_excl)  # TODO: should this be used?
         ran_uni = np.random.uniform(low=0, high=self.priorities.get_total_sum())
         ran_leaf_idx = self.priorities.value_index(ran_uni)
         ran_buff_idx = self.leaf_idx_to_buffer_idx(ran_leaf_idx)
