@@ -139,11 +139,12 @@ class PrioritizedReplayMemory(UniformReplayMemory):
 
     def store_memory(self, memory):
         # First check of any of k=(state_len + n - 1) last inserted memories belong to different life/episode.
-        # If so make set priority to 0 such that this memory will not be sampled.
-        # Why: when we sample two transitions, we 1. don't want the two states to be from different lives/eps,
-        # and 2. we don't want any transition to be composed of frames from different lives/eps.
+        # If so set priority to 0 such that this memory will not be sampled.
+        # Why: when we sample two transitions, we 
+        #   1. don't want the two states to be from different lives/eps,
+        #   2. we don't want any transition to be composed of frames from different lives/eps.
         # Hence, (state_len + n - 1) consecutive frames need to be from same life/eps. The last frame can be a game-over,
-        # but the last frame cannot be a new life [TODO: currently a bug needs to be fixed]. 
+        # but the last frame cannot be a new life [TODO: currently a bug needs to be fixed]
         crosses_lives = any([self.get_gameover(i) for i in np.arange(max(self.len - self.N_lower_bound, 0), self.len)])
         
         # Store memory data in replay buffer
@@ -183,7 +184,6 @@ class PrioritizedReplayMemory(UniformReplayMemory):
     def update_priorities(self, idxs, ps):
         for idx, p in zip(idxs, ps):
             self._update_priority(idx, p)
-        self._zero_out_lower_memories()
 
         # Update the priority given to new memories
         self.p_new_mem = max(self.p_new_mem, self.p_maxtree.get_max())
