@@ -1,6 +1,6 @@
 # Atari 2600 Deep-Q Learning AI
-Rf-atari implements a set of reinforcement learning algorithms to learn control policies for playing Atari games.
-This implementation recreates the Deep Q-Networks (DQN) model and configuration as proposed first by Google DeepMind.
+Rf-atari implements a set of reinforcement learning algorithms to learn control policies for playing Atari games. <br>
+This implementation recreates the Deep Q-Networks (DQN) model and configuration as proposed first by Google DeepMind.<br>
 The following deep-RL variants and features are built out, the integrated combination of which is known as the Rainbow agent.
 ###
 
