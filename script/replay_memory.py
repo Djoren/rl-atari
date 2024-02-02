@@ -125,7 +125,7 @@ class PrioritizedReplayMemory(UniformReplayMemory):
         return w_normed
     
     def get_imps_weights(self, buff_idxs):
-        return list(map(self.get_imps_weight, buff_idxs))
+        return np.array(list(map(self.get_imps_weight, buff_idxs)))
     
     def get_priority(self, buff_idx):
         return self.priorities.tree[self.buffer_idx_to_tree_idx(buff_idx)]
