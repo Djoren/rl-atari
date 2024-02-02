@@ -13,15 +13,15 @@ Enabled | Algorithm | Reference
 :heavy_check_mark: | Dueling Network Architecture|  https://arxiv.org/abs/1511.06581|
 :heavy_check_mark: |Noisy Network | https://arxiv.org/abs/1706.10295 |
 :heavy_check_mark: |Distributional Network (C51) | https://arxiv.org/abs/1707.06887 |
-| | Asynchronous Advantage Actor-Critic (A3C)| https://arxiv.org/abs/1602.01783 |
+| | Async Advantage Actor-Critic (A3C)| https://arxiv.org/abs/1602.01783 |
 :heavy_check_mark: | Rainbow Agent | https://arxiv.org/abs/1710.02298 |
 ###
 
 
 # Visualization
-
-The following shows a (partially) trained DQN agent playing Space Invaders attaining a training score of 2145. Plotted are 
-1. **Left** Original Atari frame
+Custom functions are written to output comprehensive animations of agent playing episodes during training, with details such as Q values, Z distribution and activation maps.
+The following shows a (partially) trained DQN agent playing Space Invaders attaining a training score of 2145. Displayed are:
+1. **Left** Original Atari frame.
 2. **Right** Preprocessed frame as viewed by agent.
    - Overlayed on this are Conv. Neural Net saliency maps to display pixel attribution in agent decision making.
    - Dueling network was used, where value stream is displayed in blue and advantage in red.
@@ -37,11 +37,20 @@ https://github.com/Djoren/rf-atari/assets/10808578/eeabd46e-c78d-457e-8565-ae24f
 
 # Implementation
 
-Agent models use convolutional neural networks coded up in Tensorflow 2). Both a small (2 conv layers) and a large network (3 conv layers) are supported.
-The following displays an example of a large network with Dueling (V and A) streams, as well as noisy layers.
+AI agents are build on top convolutional neural networks coded up in Tensorflow 2. Both a small (2 conv layers) and a large network (3 conv layers) are supported.
+Example 1: a large network with Dueling (V and A) streams, as well as noisy layers.
+
+###
 
 ![output2](https://github.com/Djoren/rf-atari/assets/10808578/4843b2fe-c70e-47e8-9397-31a6bf672ece)
 
+###
+
+Example 2: of a large network with Dueling (V and A) streams, as well as distributive (C51) output.
+
+###
+
+![output2](https://github.com/Djoren/rf-atari/assets/10808578/4843b2fe-c70e-47e8-9397-31a6bf672ece)
 
 ###
 
