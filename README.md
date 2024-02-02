@@ -14,15 +14,34 @@ Enabled | Algorithm | Reference
 :heavy_check_mark: |Noisy Network | https://arxiv.org/abs/1706.10295 |
 :heavy_check_mark: |Distributional Network (C51) | https://arxiv.org/abs/1707.06887 |
 | | Asynchronous Advantage Actor-Critic (A3C)| https://arxiv.org/abs/1602.01783 |
-:heavy_check_mark: | Rainbow| https://arxiv.org/abs/1710.02298 |
+:heavy_check_mark: | Rainbow Agent | https://arxiv.org/abs/1710.02298 |
 ###
 
 
 # Visualization
 
+The following shows a (partially) trained DQN agent playing Space Invaders attaining a training score of 2145. Plotted are 
+1. **Left** Original Atari frame
+2. **Right**
+   - Preprocessed frame as viewed by agent, overlayed with Conv. Neural Net saliency maps to display pixel attribution in agent decision making.
+   - Dueling network was used, where value stream is displayed in blue and advantage in red.
+3. **Middle** Max Q-value series as estimated by agent.
+4. **Bottom** Q-values for each action.
+
+Note that saliency/activation maps can often be rather noisy, however some particular attentions stand out, such as agent focussing on the bonus (round) flying saucer.
+
+https://github.com/Djoren/rf-atari/assets/10808578/eeabd46e-c78d-457e-8565-ae24f1060cd5
+
+
 ###
 
 # Implementation
+
+Agent models use convolutional neural networks coded up in Tensorflow 2). Both a small (2 conv layers) and a large network (3 conv layers) are supported.
+The following displays an example of a large network with Dueling (V and A) streams, as well as noisy layers.
+
+![output2](https://github.com/Djoren/rf-atari/assets/10808578/4843b2fe-c70e-47e8-9397-31a6bf672ece)
+
 
 ###
 
