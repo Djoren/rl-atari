@@ -22,13 +22,13 @@ Enabled | Algorithm | Reference
 
 The following shows a (partially) trained DQN agent playing Space Invaders attaining a training score of 2145. Plotted are 
 1. **Left** Original Atari frame
-2. **Right**
-   - Preprocessed frame as viewed by agent, overlayed with Conv. Neural Net saliency maps to display pixel attribution in agent decision making.
+2. **Right** Preprocessed frame as viewed by agent.
+   - Overlayed on this are Conv. Neural Net saliency maps to display pixel attribution in agent decision making.
    - Dueling network was used, where value stream is displayed in blue and advantage in red.
 3. **Middle** Max Q-value series as estimated by agent.
 4. **Bottom** Q-values for each action.
 
-Note that saliency/activation maps can often be rather noisy, however some particular attentions stand out, such as agent focussing on the bonus (round) flying saucer.
+Note: saliency/activation maps can often be rather noisy, however some particular attentions stand out, such as agent focussing on the bonus (round) flying saucer.
 
 https://github.com/Djoren/rf-atari/assets/10808578/eeabd46e-c78d-457e-8565-ae24f1060cd5
 
