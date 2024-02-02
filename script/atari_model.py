@@ -11,8 +11,8 @@ from tensorflow.math import reduce_mean
 
 
 # TODO: pass in only tensors etc. To avoid retracing.
-@tf.function  # Somehow this causes y_pred to have slightly different decimals
-def train_on_batch(model, x, y_tgt, actions, tgt_zeroing=False, sample_weight=None):
+@tf.function
+def train_on_batch(model, x, y_tgt, actions, sample_weight=None):
     """Custom fit function such that we can obtain td-error, w/o having to recompute it.
     
     Assumptions:
@@ -29,27 +29,19 @@ def train_on_batch(model, x, y_tgt, actions, tgt_zeroing=False, sample_weight=No
         - This should not affect direction of gradients, but only the magnitude => has interplay with learning-rate.
         
     """
-     # Forward pass
+     # Forward pass, keep only pred values for actions actually taken
     with tf.GradientTape() as tape:
         y_pred = model(x, training=True)
-
-        # Set target such that updates are only executed for those actions taken,
-        # i.e. one action per each sample
-        shape = y_pred.get_shape()
-        indices = tf.stack([tf.range(shape[0]), actions], axis=1)
-        if tgt_zeroing:
-            y_tgt = tf.scatter_nd(indices, y_tgt, shape)  # Set all but the update values to 0
-        else:
-            y_tgt = tf.tensor_scatter_nd_update(y_pred, indices, y_tgt)  # Set all but the update values to y_pred
+        indices = tf.expand_dims(actions, -1)  # 1D -> 2D
+        y_pred = tf.expand_dims(tf.gather_nd(y_pred, indices, batch_dims=1), -1)
         loss = model.loss(y_tgt, y_pred, sample_weight=sample_weight)
-        
+
     # Backward pass
     grads = tape.gradient(loss, model.trainable_weights)
     model.optimizer.apply_gradients(zip(grads, model.trainable_weights))
     return y_pred, loss
 
 
-# TODO: This seems like it's faster, but unsure if there's risk of issues
 @tf.function
 def model_call(model, inputs):
     return model(inputs)
@@ -70,7 +62,7 @@ def abs_td_error(y_pred, y_tgt, distr_net=False, Z=None):
     if distr_net:
         y_pred = Q_from_Z_distr(Z, y_pred)
         y_tgt = Q_from_Z_distr(Z, y_tgt)
-    return np.abs(y_tgt - y_pred)
+    return np.abs(y_tgt - y_pred).ravel()
 
 
 def atari_model(
@@ -81,13 +73,13 @@ def atari_model(
     Notes: 
         - that the 4th action (FIRE) starts the game for some games.
     """
-    # Input layers
+    # Input layer
     input_frames = layers.Input(state_shape, name='input_frames', dtype=tf.float32)
-    normed_frames = layers.Lambda(lambda x: tf.cast(x, tf.float32) / 255.0)(input_frames)  # Convert frames uint8[0, 255] to float[0, 1]
-    # TODO: more efficient to leave out the 255 at frames processing, and here as well?
+    normed_frames = layers.Lambda(lambda x: tf.cast(x, tf.float32) / 255.0)(input_frames)  # Cast frames uint8[0, 255] -> float[0, 1]
 
+    # Convolutional and dense layers
     if large_net:
-        # Convolutional layers
+        # Conv layers
         conv_1 = layers.Conv2D(
             32, (8, 8), strides=(4, 4), activation='relu', 
             name='conv1', kernel_initializer=kernel_init
@@ -101,14 +93,14 @@ def atari_model(
             name='conv3', kernel_initializer=kernel_init
         )(conv_2)
 
-        # Fully connected layers
+        # FC layers
         layer_dense = NoisyDense if noisy_net else layers.Dense
         conv_flat = layers.Flatten()(conv_3)
         hidden = layer_dense(
             512, activation='relu', name='hid', kernel_initializer=kernel_init
         )(conv_flat)
     else:
-        # Convolutional layers
+        # Conv layers
         conv_1 = layers.Conv2D(
             16, (8, 8), strides=(4, 4), activation='relu', 
             name='conv1', kernel_initializer=kernel_init
@@ -118,7 +110,7 @@ def atari_model(
             name='conv2', kernel_initializer=kernel_init
         )(conv_1)
 
-        # Fully connected layers
+        # FC layers
         # layer_dense = layers_tfa.NoisyDense if noisy_net else layers.Dense
         # layer_dense = layers.Dense
         layer_dense = NoisyDense if noisy_net else layers.Dense
@@ -130,11 +122,10 @@ def atari_model(
     # Output layer. Q values are masked by actions so only selected actions have non-0 Q value
     output = layer_dense(n_actions, name='Q', kernel_initializer=kernel_init)(hidden)
 
-    # Set model
+    # Configure model
     model = keras.Model(inputs=input_frames, outputs=output)
     optimizer = RMSprop(learning_rate=lr, rho=0.95, epsilon=0.01)
     model.compile(optimizer=optimizer, loss=Huber())
-    
     return model
 
 
@@ -147,11 +138,11 @@ def atari_model_dueling(
     """
     # Input layers
     in_frames = layers.Input(state_shape, name='input_frames', dtype=tf.float32)
-    normed_frames = layers.Lambda(lambda x: tf.cast(x, tf.float32) / 255.0)(in_frames)  # Convert frames uint8[0, 255] to float[0, 1]
-    # TODO: more efficient to leave out the 255 at frames processing, and here as well?
+    normed_frames = layers.Lambda(lambda x: tf.cast(x, tf.float32) / 255.0)(in_frames)  # Cast frames uint8[0, 255] -> float[0, 1]
 
+    # Convolutional and dense layers
     if large_net:
-        # Convolutional layers
+        # Conv layers
         conv_1 = layers.Conv2D(
             32, (8, 8), strides=(4, 4), activation='relu', 
             name='conv1', kernel_initializer=kernel_init
@@ -165,7 +156,7 @@ def atari_model_dueling(
             name='conv3', kernel_initializer=kernel_init
         )(conv_2)
 
-        # Fully connected layers for both value and advantage streams
+        # FC layers for both value and advantage streams
         layer_dense = NoisyDense if noisy_net else layers.Dense
         conv_flat = layers.Flatten()(conv_3)
         hidden_val = layer_dense(
@@ -175,7 +166,7 @@ def atari_model_dueling(
             512, activation='relu', name='A_hid', kernel_initializer=kernel_init
         )(conv_flat)
     else:
-        # Convolutional layers
+        # Conv layers
         conv_1 = layers.Conv2D(
             16, (8, 8), strides=(4, 4), activation='relu', 
             name='conv1', kernel_initializer=kernel_init
@@ -185,7 +176,7 @@ def atari_model_dueling(
             name='conv2', kernel_initializer=kernel_init
         )(conv_1)
 
-        # Fully connected layers for both value and advantage streams
+        # FC layers for both value and advantage streams
         layer_dense = NoisyDense if noisy_net else layers.Dense
         conv_flat = layers.Flatten()(conv_2)
         hidden_val = layer_dense(
@@ -209,7 +200,7 @@ def atari_model_dueling(
     # Combine both outputs to estimate Q values
     output = layers.Add(name='Q')([out_val, out_adv_adj])
 
-    # Model
+    # Configure model
     model = keras.Model(inputs=in_frames, outputs=output)
     optimizer = RMSprop(learning_rate=lr, rho=0.95, epsilon=0.01)
     model.compile(optimizer=optimizer, loss=Huber())
@@ -222,34 +213,60 @@ def atari_model_distr(
     ): 
     # Input layers
     input_frames = layers.Input(state_shape, name='input_frames', dtype=tf.float32)
-    normed_frames = layers.Lambda(lambda x: tf.cast(x, tf.float32) / 255.0)(input_frames)  # Convert frames uint8[0, 255] to float[0, 1]
+    normed_frames = layers.Lambda(lambda x: tf.cast(x, tf.float32) / 255.0)(input_frames)  # Cast frames uint8[0, 255] -> float[0, 1]
 
-    # Convolutional layers
-    conv_1 = layers.Conv2D(
-        16, (8, 8), strides=(4, 4), activation='relu', name='conv1', kernel_initializer=kernel_init
-    )(normed_frames)
-    conv_2 = layers.Conv2D(
-        32, (4, 4), strides=(2, 2), activation='relu', name='conv2', kernel_initializer=kernel_init
-    )(conv_1)
+    # Convolutional and dense layers
+    if large_net:
+        # Conv layers
+        conv_1 = layers.Conv2D(
+            32, (8, 8), strides=(4, 4), activation='relu', 
+            name='conv1', kernel_initializer=kernel_init
+        )(normed_frames)
+        conv_2 = layers.Conv2D(
+            64, (4, 4), strides=(2, 2), activation='relu', 
+            name='conv2', kernel_initializer=kernel_init
+        )(conv_1)
+        conv_3 = layers.Conv2D(
+            64, (3, 3), strides=(1, 1), activation='relu', 
+            name='conv3', kernel_initializer=kernel_init
+        )(conv_2)
 
-    # Fully connected layers
-    layer_dense = NoisyDense if noisy_net else layers.Dense
-    conv_flat = layers.Flatten()(conv_2)
-    hidden = layer_dense(
-        256, activation='relu', name='hid', kernel_initializer=kernel_init
-    )(conv_flat)
+        # FC layers
+        layer_dense = NoisyDense if noisy_net else layers.Dense
+        conv_flat = layers.Flatten()(conv_3)
+        hidden = layer_dense(
+            512, activation='relu', name='hid', kernel_initializer=kernel_init
+        )(conv_flat)
+    else:
+        # Conv layers
+        conv_1 = layers.Conv2D(
+            16, (8, 8), strides=(4, 4), activation='relu', 
+            name='conv1', kernel_initializer=kernel_init
+        )(normed_frames)
+        conv_2 = layers.Conv2D(
+            32, (4, 4), strides=(2, 2), activation='relu', 
+            name='conv2', kernel_initializer=kernel_init
+        )(conv_1)
+
+        # FC layers
+        layer_dense = NoisyDense if noisy_net else layers.Dense
+        conv_flat = layers.Flatten()(conv_2)
+        hidden = layer_dense(
+            256, activation='relu', name='hid', kernel_initializer=kernel_init
+        )(conv_flat)
 
     # Output layers Z(a) for every action
     outputs = []
     for i in range(N_actions):
         output_a = layer_dense(N_atoms, activation='softmax', name=f'p_{i}', kernel_initializer=kernel_init)(hidden)
-        output_a = layers.Reshape((1, N_atoms))(output_a)
+        output_a = layers.Reshape((1, N_atoms))(output_a)  # Adds a dim => (batch_size, 1, N_atoms)
         outputs.append(output_a)
     output = layers.Concatenate(name='p_concat', axis=1)(outputs)
 
-    # Set model
-    # Note: tf cross-entropy can handle float dtype for y_true
-    #       and  computes CE across the axis=1 by default
+    # Configure model
+    # Notes
+    #   - tf cross-entropy can handle real values for y_true
+    #   - CE is computed across the axis=1 by default (what we want)
     model = keras.Model(inputs=input_frames, outputs=output)
     optimizer = RMSprop(learning_rate=lr, rho=0.95, epsilon=0.01)
     model.compile(optimizer=optimizer, loss=loss)
@@ -420,7 +437,6 @@ def fit_batch_DQNn_PER(
 
     # Run SGD update
     td_err = train_on_batch([state_now, action_ohe], Q_tgt, model, sample_weight=w_imps)
-
     return td_err.numpy()
 
 
@@ -504,25 +520,25 @@ def fit_batch_DDQNn_PER(
         # 2. Obtain Q values of max action, from the target model
         Q_next_onl = model_call(model, state_next).numpy()
         Q_next_onl[game_over] = 0  # Q value of terminal state is 0 by definition
-        Q_next_tgt_max = Q_next_tgt[range(batch_sz), Q_next_onl.argmax(axis=1)]
+        Q_next_tgt_max = Q_next_tgt[range(batch_sz), Q_next_onl.argmax(axis=1), None]  # Dims (batch_sz, 1)
     else:
-        Q_next_tgt_max = Q_next_tgt.max(axis=1)
+        Q_next_tgt_max = Q_next_tgt.max(axis=1, keepdims=True)
     
     # Set Q target. We only want to run SGD updates for those actions taken
     n = rewards.shape[1]
-    R_n = (gamma ** np.arange(n) * rewards).sum(axis=1)  # n-step forward return
-    Q_now_tgt = np.float32(R_n + (gamma ** n) * Q_next_tgt_max)  # Has dims (batch_sz, 1)
+    R_n = (gamma ** np.arange(n) * rewards).sum(axis=1, keepdims=True)  # n-step forward return
+    Q_now_tgt = np.float32(R_n + (gamma ** n) * Q_next_tgt_max)  # Dims (batch_sz, 1)
 
     # Run SGD update and compute TD-error
     Q_now_pred, loss = train_on_batch(model, state_now, Q_now_tgt, action_idx, sample_weight=w_imps)
-    Q_now_pred = Q_now_pred.numpy()[range(batch_sz), action_idx] # Remove actions that were not taken
+    Q_now_pred = Q_now_pred.numpy()
     td_err = abs_td_error(Q_now_pred, Q_now_tgt)
     return td_err, loss
 
 
 def fit_batch_DDQNn_PER_DS(
         model, model_tgt, action_space, gamma, state_now, action, rewards, 
-        game_over, state_next, w_imps, Z, Z_repN, dZ, V, tgt_zeroing, noisy_net=False, 
+        game_over, state_next, w_imps, Z, Z_repN, dZ, V, noisy_net=False, 
         double_learn=False
     ):
     """Q-learning update on a batch of transitions."""
@@ -560,32 +576,10 @@ def fit_batch_DDQNn_PER_DS(
     w = np.clip(1 - np.abs(np.repeat([TZ.T], N, axis=0).T - Z_repN) / dZ, 0, None)
     p_now_tgt = np.float32((p_next_tgt_max[..., None] * w).sum(axis=1))
 
-   # Run SGD update
+    # Run SGD update
     p_now_pred, loss = train_on_batch(
-        model, state_now, p_now_tgt, action_idx, tgt_zeroing, sample_weight=w_imps
+        model, state_now, p_now_tgt, action_idx, sample_weight=w_imps
     )
     p_now_pred = p_now_pred.numpy()[range(batch_sz), action_idx] # Remove actions that were not taken
     td_err = abs_td_error(p_now_pred, p_now_tgt, distr_net=True, Z=Z)
-    loss = loss.numpy()[0]
     return td_err, loss
-
-
-def compute_distr_target(model, states, Z, Z_rep, dZ, V_min, V_max, N, rewards, gamma):
-    """Computes the new target Z-distribution probabilities."""
-    p = model(states).numpy()  # Predicted Z-distr. probabilities for model inputs
-    Q = Q_from_Z_distr(Z, p)  # Get pred Q from Z-distr.
-    a_max = Q.argmax(axis=1)
-    p_max = p[range(p.shape[0]), a_max]  # Subset of p matrix: per data point only the action that maxes Q(a)
-
-    # Compute distributional bellman update -> TZ
-    TZ = rewards + gamma * Z  # Applying distr. belman operator T^pi
-    TZ = np.clip(TZ, V_min, V_max)  # Bound update to support of Z, [V_min, V_max]
-
-    # Project bellman update onto support of TZ -> Phi TZ
-    TZ_rep = np.repeat([TZ], N, axis=0).T
-    w_project = np.clip(1 - np.abs(TZ_rep - Z_rep) / dZ, 0, None)  # Projection weights to distribute TZ probs to Z
-    
-    # Assign new weighted (target) probs to p matrix
-    # Keeping probs of the non-selected (non-Q-maxing) actions fixed 
-    p[range(p.shape[0]), a_max] = np.dot(p_max, w_project)
-    return p
