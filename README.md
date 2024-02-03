@@ -46,7 +46,7 @@ Example 1: a large network with Dueling (V and A) streams, as well as noisy laye
 
 ###
 
-Example 2: of a large network with Dueling (V and A) streams, as well as distributive (C51) output.
+Example 2: of a large network with Dueling (V and A) streams, as well as distributional (C51) output.
 
 ###
 
