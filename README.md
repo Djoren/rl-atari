@@ -37,7 +37,7 @@ https://github.com/Djoren/rf-atari/assets/10808578/eeabd46e-c78d-457e-8565-ae24f
 
 # Implementation
 
-AI agents are build on top convolutional neural networks coded up in Tensorflow 2. Both a small (2 conv layers) and a large network (3 conv layers) are supported.
+AI agents are build on top of convolutional neural networks coded up in Tensorflow 2. Both a small (2 conv layers) and a large network (3 conv layers) are supported.
 Example 1: a large network with Dueling (V and A) streams, as well as noisy layers.
 
 ###
@@ -46,7 +46,7 @@ Example 1: a large network with Dueling (V and A) streams, as well as noisy laye
 
 ###
 
-Example 2: of a large network with Dueling (V and A) streams, as well as distributive (C51) output.
+Example 2: of a large network with Dueling (V and A) streams, as well as distributional (C51) output.
 
 ###
 
