@@ -1,8 +1,8 @@
 # Atari 2600 Deep-Q Learning AI
 Rl-atari implements a set of reinforcement learning algorithms to learn control policies for playing Atari games. <br>
 This implementation recreates the Deep Q-Networks (DQN) model and configuration as proposed first by Google DeepMind.<br>
-It combines computer vision (using convoluational neural networks) with reinforcement learning algorithms (Q-learning), in order to train an agent
-that autonomously (that is without supervision) learns how to play a computer game from only pixel and rewards inputs.
+It combines computer vision (using convolutional neural networks) with reinforcement learning algorithms (Q-learning), in order to train an agent
+that autonomously (read: without supervision) learns how to play a computer game from only pixel and reward inputs.
 The following deep-RL variants and features are built out, the integrated combination of which is known as the Rainbow agent.
 
 Training these agents takes a very long time, bringing with it an extended turnaround to obtain (new) results. New progress and figures will be pushed as they come in.
