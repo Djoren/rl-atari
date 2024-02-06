@@ -1,24 +1,37 @@
+"""Implements all Atari agent models, as well as train functions.
+
+Contains models for:
+    1. Base DQN arch
+    2. Dueling arch
+    3. Distributional arch
+    4. Dueling x distributional arch
+"""
+
 import numpy as np
-from datetime import datetime
+from typing import List, Tuple
+
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 # from tensorflow_addons import layers as layers_tfa
 from noisy_dense import NoisyDense
 from tensorflow.keras.optimizers import RMSprop
-from tensorflow.keras.losses import Huber, CategoricalCrossentropy
+from tensorflow.keras.losses import Huber
 from tensorflow.math import reduce_mean
 
 
-# TODO: pass in only tensors etc. To avoid retracing.
 @tf.function
-def train_on_batch(model, x, y_tgt, actions, sample_weight=None):
+def train_on_batch(
+        model: tf.keras.Model, x: np.array, y_tgt: np.array, actions: np.array, 
+        sample_weight: np.array =None
+    ) -> Tuple[tf.Tensor, tf.Tensor]:
     """Custom fit function such that we can obtain td-error, w/o having to recompute it.
     
     Assumptions:
         1. Model has been passed an optimizer object as argument, not a string.
 
-    Notes:
+    Note:
+        - Decorating this function as a graph function makes it much faster.
         - To calc loss for each sample: TF takes some form of mean across the output dimension (axis=-1).
           E.g. for MAE it's mean, for cat. cross-entropy it's the sum.
         - TF then by default takes mean across losses for all other dimensions. The name `sum_over_batch_size` seems like a misnomer,
@@ -28,12 +41,24 @@ def train_on_batch(model, x, y_tgt, actions, sample_weight=None):
           And then divide by true batch size, i.e. first dimension (axis=1).
         - This should not affect direction of gradients, but only the magnitude => has interplay with learning-rate.
         
+    Args:
+        model: Tf model to train.
+        x: Model input values (dims = batch_size x (...)).
+        y_tgt: Target values (dims = batch_size x (...)):
+        actions: Taken actions for mini batch (dims = batch_size x 1).
+        sample_weight: Training sample weights.
+
+    Returns:
+        y_pred: Predicted values. Can be used downstream, avoiding need to recompute.
+        loss: Training loss.
+
+    TODO: pass in only tensors etc. to avoid retracing (if this is even happening).
     """
      # Forward pass, keep only pred values for actions actually taken
     with tf.GradientTape() as tape:
         y_pred = model(x, training=True)
         indices = tf.expand_dims(actions, -1)  # 1D -> 2D
-        y_pred = tf.expand_dims(tf.gather_nd(y_pred, indices, batch_dims=1), -1)
+        y_pred = tf.reshape(tf.gather_nd(y_pred, indices, batch_dims=1), y_tgt.get_shape())
         loss = model.loss(y_tgt, y_pred, sample_weight=sample_weight)
 
     # Backward pass
@@ -43,19 +68,38 @@ def train_on_batch(model, x, y_tgt, actions, sample_weight=None):
 
 
 @tf.function
-def model_call(model, inputs):
+def model_call(model: tf.keras.Model, inputs: np.array) -> tf.Tensor:
+    """Call model (making model predictions.)
+    
+    Note:
+        - Decorating this function as a graph function makes it much faster.
+    """
     return model(inputs)
 
 
-def Q_from_Z_distr(Z, p):
-    """Computes the estimate Q_hat from Z distribution."""
+def Q_from_Z_distr(Z: np.array, p: np.array) -> float:
+    """Computes the estimate Q_hat from Z distribution.
+    
+    Args:
+        Z: Fixed categorical distribution values.
+        p: Prob. density for each z in Z.
+    """
     return np.sum(Z * p, axis=-1)
 
 
-def abs_td_error(y_pred, y_tgt, distr_net=False, Z=None):
-    """Compute TD-error for predicted Q vs target Q.
+def abs_td_error(
+        y_pred: np.array, y_tgt: np.array, distr_net: bool = False, Z: np.array = None
+    ) -> np.array:
+    """Compute TD-error for predicted Q vs target Q, on a mini batch.
     
     Used for setting priorities in Prioritized Experience Replay.
+
+    Args:
+        Q_pred: Predicted Q values, or pZ values for distr. net.
+        Q_tgt: Target Q values, or pZ values for distr. net.
+        distr_net: Indicator if model is a distributional network.
+        Z: Fixed categorical distribution values.
+    
     TODO: Z should be class attribute when we OOP all this code.
     """
     # If distributive target convert p_Z to Q
@@ -66,12 +110,19 @@ def abs_td_error(y_pred, y_tgt, distr_net=False, Z=None):
 
 
 def atari_model(
-        n_actions, lr, state_shape, kernel_init='glorot_uniform', noisy_net=False, 
-        large_net=False
-    ): 
-    """ 
-    Notes: 
-        - that the 4th action (FIRE) starts the game for some games.
+        N_actions: int, loss, lr: float, state_shape: tuple, 
+        kernel_init: str = 'glorot_uniform', noisy_net: bool = False, 
+        large_net: bool = False
+    ) -> tf.keras.Model: 
+    """Composes a DQN convolutional neural network. 
+
+    Args:
+        N_actions: Len of action space.
+        lr: Learning rate.
+        state_shape: Shape of input states.
+        kernel_init: Weight initializer.
+        noisy_net: Toggle to set dense layers as noisy dense layers.
+        large_net: Toggle to set model arch to larger or small.
     """
     # Input layer
     input_frames = layers.Input(state_shape, name='input_frames', dtype=tf.float32)
@@ -120,21 +171,29 @@ def atari_model(
         )(conv_flat)
 
     # Output layer. Q values are masked by actions so only selected actions have non-0 Q value
-    output = layer_dense(n_actions, name='Q', kernel_initializer=kernel_init)(hidden)
+    output = layer_dense(N_actions, name='Q', kernel_initializer=kernel_init)(hidden)
 
     # Configure model
     model = keras.Model(inputs=input_frames, outputs=output)
     optimizer = RMSprop(learning_rate=lr, rho=0.95, epsilon=0.01)
-    model.compile(optimizer=optimizer, loss=Huber())
+    model.compile(optimizer=optimizer, loss=loss)
     return model
 
 
 def atari_model_dueling(
-        n_actions, lr, state_shape, kernel_init='glorot_uniform', noisy_net=False, 
-        large_net=False    
-    ): 
-    """ n_actions: OHE matrix of actions.
-        Note that the 4th action (FIRE) starts the game.
+        N_actions: int, loss, lr: float, state_shape: tuple, 
+        kernel_init: str = 'glorot_uniform', noisy_net: bool = False, 
+        large_net: bool = False
+    ) -> tf.keras.Model: 
+    """Composes a Dueling-DQN convolutional neural network. 
+
+    Args:
+        N_actions: Len of action space.
+        lr: Learning rate.
+        state_shape: Shape of input states.
+        kernel_init: Weight initializer.
+        noisy_net: Toggle to set dense layers as noisy dense layers.
+        large_net: Toggle to set model arch to larger or small.
     """
     # Input layers
     in_frames = layers.Input(state_shape, name='input_frames', dtype=tf.float32)
@@ -189,7 +248,7 @@ def atari_model_dueling(
     # Output layers for value and advantage streams
     # Advantage layer is masked so only selected actions have non-0 value
     out_val = layer_dense(1, name='V', kernel_initializer=kernel_init)(hidden_val)
-    out_adv = layer_dense(n_actions, name='A', kernel_initializer=kernel_init)(hidden_adv)
+    out_adv = layer_dense(N_actions, name='A', kernel_initializer=kernel_init)(hidden_adv)
 
     # Adjust advantage output
     out_adv_avg = layers.Lambda(
@@ -203,14 +262,26 @@ def atari_model_dueling(
     # Configure model
     model = keras.Model(inputs=in_frames, outputs=output)
     optimizer = RMSprop(learning_rate=lr, rho=0.95, epsilon=0.01)
-    model.compile(optimizer=optimizer, loss=Huber())
+    model.compile(optimizer=optimizer, loss=loss)
     return model
 
 
 def atari_model_distr(
-        N_atoms, N_actions, loss, lr, state_shape, kernel_init='glorot_uniform', 
-        noisy_net=False, large_net=False
-    ): 
+        N_atoms: int, N_actions: int, loss, lr: float, state_shape: tuple, 
+        kernel_init: str = 'glorot_uniform', noisy_net: bool = False, large_net: bool = False
+    ) -> tf.keras.Model: 
+    """Composes a Distributional-DQN convolutional neural network. 
+
+    Args:
+        N_atoms: Number of Z values for categorical distr.
+        N_actions: Len of action space.
+        lr: Learning rate.
+        loss: Loss object.
+        state_shape: Shape of input states.
+        kernel_init: Weight initializer.
+        noisy_net: Toggle to set dense layers as noisy dense layers.
+        large_net: Toggle to set model arch to larger or small.
+    """
     # Input layers
     input_frames = layers.Input(state_shape, name='input_frames', dtype=tf.float32)
     normed_frames = layers.Lambda(lambda x: tf.cast(x, tf.float32) / 255.0)(input_frames)  # Cast frames uint8[0, 255] -> float[0, 1]
@@ -273,230 +344,142 @@ def atari_model_distr(
     return model
 
 
-def fit_batch(model, action_space, gamma, state_now, action, reward, game_over, state_next):
-    """Do Q-learning update on a batch of transitions."""
-    # Reshape variables
-    action_idx = [action_space.index(a) for a in action]  # Convert to indexed actions
-    action_ohe = np.eye(model.output.shape[1])[action_idx]  # OHE encode actions
-    state_now = np.stack(state_now)
-    state_next = np.stack(state_next)
-    game_over = game_over.tolist()
-    
-    # Predict Q values of the next states for all actions
-    Q_val = model([state_next, np.ones_like(action)]).numpy()
-    Q_val[game_over] = 0  # Q value of terminal state is 0 by definition
-    
-    # Set Q target. We only run SGD updates for those actions taken.
-    # Hence, Q target for non-taken actions is set to 0
-    Q_tgt = reward + gamma * Q_val.max(axis=1)
-    Q_tgt = np.float32(action_ohe * Q_tgt[:, None])
-    
-    # Run SGD update
-    model.fit([state_now, action_ohe], Q_tgt, batch_size=len(Q_tgt), epochs=1, verbose=0)
+def atari_model_dueling_distr(
+        N_atoms: int, N_actions: int, loss, lr: float, state_shape: tuple, 
+        kernel_init: str = 'glorot_uniform', noisy_net: bool = False, large_net: bool = False
+    ) -> tf.keras.Model: 
+    """Composes a Dueling-Distributional-DQN convolutional neural network. 
 
-
-def fit_batch_DQN(
-        model, model_tgt, action_space, gamma, state_now, action, 
-        reward, game_over, state_next, custom_fit=False
-    ):
-    """Q-learning update on a batch of transitions."""
-    # Reshape variables
-    action_idx = [action_space.index(a) for a in action]  # Convert to indexed actions
-    action_ohe = np.eye(model.output.shape[1])[action_idx]  # OHE encode actions
-    state_now = np.stack(state_now)
-    state_next = np.stack(state_next)
-    game_over = game_over.tolist()
-    
-    # Predict Q values of the next states for all actions
-    Q_val = model_tgt([state_next, np.ones_like(action_ohe)]).numpy()
-    Q_val[game_over] = 0  # Q value of terminal state is 0 by definition
-    
-    # Set Q target. We only run SGD updates for those actions taken.
-    # Hence, Q target for non-taken actions is set to 0
-    Q_tgt = reward + gamma * Q_val.max(axis=1)
-    Q_tgt = np.float32(action_ohe * Q_tgt[:, None])
-
-    # # Tensorboard
-    # logs = 'logs/' + datetime.now().strftime('%Y%m%d-%H%M%S')
-    # tboard_callback = tf.keras.callbacks.TensorBoard(
-    #     log_dir=logs, histogram_freq=1, profile_batch='1'
-    # )
-    
-    # Run SGD update
-    if custom_fit:
-        train_on_batch([state_now, action_ohe], Q_tgt, model)
-    else:
-        model.train_on_batch([state_now, action_ohe], Q_tgt)
-
-
-def fit_batch_DDQN(model, model_tgt, action_space, gamma, state_now, action, reward, game_over, state_next):
-    """Double Q-learning update on a batch of transitions."""
-    # Reshape variables
-    action_idx = [action_space.index(a) for a in action]  # Convert to indexed actions
-    action_ohe = np.eye(model.output.shape[1])[action_idx]  # OHE encode actions
-    state_now = np.stack(state_now)
-    state_next = np.stack(state_next)
-    game_over = game_over.tolist()
-
-    # Get actions that generate highest Q from online net
-    action_ones = np.ones_like(action_ohe)
-    Q_val = model([state_next, action_ones]).numpy()
-    Q_val[game_over] = 0  # Q value of terminal state is 0 by definition
-    Q_max_a_idx = Q_val.argmax(axis=1)
-    
-    # Predict Q values of the next states for all actions
-    # Use target net to get Q values for prev. selected actions
-    Q_val = model_tgt([state_next, action_ones]).numpy()
-    Q_val[game_over] = 0  # Q value of terminal state is 0 by definition
-    Q_val = Q_val[range(Q_val.shape[0]), Q_max_a_idx]
-    
-    # Set Q target. We only run SGD updates for those actions taken.
-    # Hence, Q target for non-taken actions is set to 0
-    Q_tgt = reward + gamma * Q_val
-    Q_tgt = np.float32(action_ohe * Q_tgt[:, None])
-    
-    # Run SGD update
-    model.train_on_batch([state_now, action_ohe], Q_tgt)
-
-
-def fit_batch_DQNn(
-        model, model_tgt, action_space, gamma, state_now, action, 
-        rewards, game_over, state_next, custom_fit=False
-    ):
-    """Q-learning update on a batch of transitions.
-
-    Rewards: R[t+1:t+n] for computing n-step return
-    Assumption: state(t) and state(t+n) do not cross a life lost or game-over
+    Args:
+        N_atoms: Number of Z values for categorical distr.
+        N_actions: Len of action space.
+        lr: Learning rate.
+        loss: Loss object.
+        state_shape: Shape of input states.
+        kernel_init: Weight initializer.
+        noisy_net: Toggle to set dense layers as noisy dense layers.
+        large_net: Toggle to set model arch to larger or small.
     """
-    # Reshape variables
-    action_idx = [action_space.index(a) for a in action]  # Convert to indexed actions
-    action_ohe = np.eye(model.output.shape[1])[action_idx]  # OHE encode actions
-    state_now = np.stack(state_now)
-    state_next = np.stack(state_next)
-    rewards = np.stack(rewards)
-    game_over = game_over.tolist()
-    
-    # Predict Q values of the next states for all actions
-    Q_val = model_tgt([state_next, np.ones_like(action_ohe)]).numpy()
-    Q_val[game_over] = 0  # Q value of terminal state is 0 by definition
-    
-    # Set Q target. We only run SGD updates for those actions taken.
-    # Hence, Q target for non-taken actions is set to 0
-    n = rewards.shape[1]
-    R_n = (gamma ** np.arange(n) * rewards).sum(axis=1)
-    Q_tgt = R_n + (gamma ** n) * Q_val.max(axis=1)
-    Q_tgt = np.float32(action_ohe * Q_tgt[:, None])
+    # Input layers
+    in_frames = layers.Input(state_shape, name='input_frames', dtype=tf.float32)
+    normed_frames = layers.Lambda(lambda x: tf.cast(x, tf.float32) / 255.0)(in_frames)  # Cast frames uint8[0, 255] -> float[0, 1]
 
-    # Run SGD update (train_on_batch() is faster than fit())
-    if custom_fit:
-        train_on_batch([state_now, action_ohe], Q_tgt, model)
+    # Convolutional and dense layers
+    if large_net:
+        # Conv layers
+        conv_1 = layers.Conv2D(
+            32, (8, 8), strides=(4, 4), activation='relu', 
+            name='conv1', kernel_initializer=kernel_init
+        )(normed_frames)
+        conv_2 = layers.Conv2D(
+            64, (4, 4), strides=(2, 2), activation='relu', 
+            name='conv2', kernel_initializer=kernel_init
+        )(conv_1)
+        conv_3 = layers.Conv2D(
+            64, (3, 3), strides=(1, 1), activation='relu', 
+            name='conv3', kernel_initializer=kernel_init
+        )(conv_2)
+
+        # FC layers for both value and advantage streams
+        layer_dense = NoisyDense if noisy_net else layers.Dense
+        conv_flat = layers.Flatten()(conv_3)
+        hidden_val = layer_dense(
+            512, activation='relu', name='V_hid', kernel_initializer=kernel_init
+        )(conv_flat)
+        hidden_adv = layer_dense(
+            512, activation='relu', name='A_hid', kernel_initializer=kernel_init
+        )(conv_flat)
     else:
-        model.train_on_batch([state_now, action_ohe], Q_tgt)
+        # Conv layers
+        conv_1 = layers.Conv2D(
+            16, (8, 8), strides=(4, 4), activation='relu', 
+            name='conv1', kernel_initializer=kernel_init
+        )(normed_frames)
+        conv_2 = layers.Conv2D(
+            32, (4, 4), strides=(2, 2), activation='relu', 
+            name='conv2', kernel_initializer=kernel_init
+        )(conv_1)
+
+        # FC layers for both value and advantage streams
+        layer_dense = NoisyDense if noisy_net else layers.Dense
+        conv_flat = layers.Flatten()(conv_2)
+        hidden_val = layer_dense(
+            256, activation='relu', name='V_hid', kernel_initializer=kernel_init
+        )(conv_flat)
+        hidden_adv = layer_dense(
+            256, activation='relu', name='A_hid', kernel_initializer=kernel_init
+        )(conv_flat)
+
+    # Output layers for value and advantage streams
+    # Advantage layer is masked so only selected actions have non-0 value
+    out_val_flat = layer_dense(N_atoms, name='V_flat', kernel_initializer=kernel_init)(hidden_val)
+    out_val = layers.Reshape((1, N_atoms), name='V')(out_val_flat)
+    out_adv_flat = layer_dense(N_actions * N_atoms, name='A_flat', kernel_initializer=kernel_init)(hidden_adv)
+    out_adv = layers.Reshape((N_actions, N_atoms), name='A')(out_adv_flat)
+    
+    # Adjust advantage output
+    out_adv_avg = layers.Lambda(
+        lambda x: reduce_mean(x, axis=1, keepdims=True), name='A_avg'
+    )(out_adv) 
+    out_adv_adj = layers.Subtract(name='A_adj')([out_adv, out_adv_avg])
+
+    # Combine both outputs to estimate p_Z values
+    out_score = layers.Add(name=f'score')([out_val, out_adv_adj])
+    out_pZ = layers.Softmax(name=f'p_Z', axis=2)(out_score)
+
+    # Configure model
+    model = keras.Model(inputs=in_frames, outputs=out_pZ)
+    optimizer = RMSprop(learning_rate=lr, rho=0.95, epsilon=0.01)
+    model.compile(optimizer=optimizer, loss=loss)
+    return model
 
 
-# TODO: tf.function?
-def update_noisy_layers(model):
+def update_noisy_layers(model: tf.keras.Model) -> None:
+    """Reset noisy layer parameters for a tf model.
+
+    TODO: tf.function?
+    """
     for l in model.layers:
         if l.__class__.__name__ == 'NoisyDense':
             l.reset_noise()
 
 
-def fit_batch_DQNn_PER(
-        model, model_tgt, action_space, gamma, state_now, action, rewards, 
-        game_over, state_next, w_imps, noisy_net=False
-    ):
-    """Q-learning update on a batch of transitions.
-
-    Rewards: R[t+1:t+n] for computing n-step return
-    Assumption: state(t) and state(t+n) do not cross a life lost or game-over
-    """
-    # Reshape variables
-    action_idx = [action_space.index(a) for a in action]  # Convert to indexed actions
-    action_ohe = np.eye(model.output.shape[1])[action_idx]  # OHE encode actions
-    state_now = np.stack(state_now)
-    state_next = np.stack(state_next)
-    rewards = np.stack(rewards)
-    game_over = game_over.tolist()
-
-    # Update noisy layers params
-    if noisy_net:
-        update_noisy_layers(model)
-        update_noisy_layers(model_tgt)
-    
-    # Predict Q values of the next states for all actions
-    # Q_next_ = model_tgt([state_next, np.ones_like(action_ohe)]).numpy()
-    Q_next_ = model_call(model_tgt, [state_next, np.ones_like(action_ohe)]).numpy()
-    Q_next_[game_over] = 0  # Q of terminal state is 0 by def.
-    
-    # Set Q target. We only run SGD updates for those actions taken.
-    # Hence, Q target for non-taken actions is set to 0
-    n = rewards.shape[1]
-    R_n = (gamma ** np.arange(n) * rewards).sum(axis=1)  # n-step forward return
-    Q_tgt = R_n + (gamma ** n) * Q_next_.max(axis=1)
-    Q_tgt = np.float32(action_ohe * Q_tgt[:, None])
-
-    # Run SGD update
-    td_err = train_on_batch([state_now, action_ohe], Q_tgt, model, sample_weight=w_imps)
-    return td_err.numpy()
-
-
-def fit_batch_DQNn_PER_(
-        model, model_tgt, action_space, gamma, state_now, action, rewards, 
-        game_over, state_next, w_imps
-    ):
-    """Q-learning update on a batch of transitions.
-
-    Rewards: R[t+1:t+n] for computing n-step return
-    Assumption: state(t) and state(t+n) do not cross a life lost or game-over
-    """
-    # Reshape variables
-    action_idx = [action_space.index(a) for a in action]  # Convert to indexed actions
-    action_ohe = np.eye(model.output.shape[1])[action_idx]  # OHE encode actions
-    state_now = np.stack(state_now)
-    state_next = np.stack(state_next)
-    rewards = np.stack(rewards)
-    game_over = game_over.tolist()
-
-    # Predict Q values of the current states for taken actions
-    # NOTE: current states shouldn't contain game-overs/life-losts, per sample logic
-    Q_now = model([state_now, action_ohe]).numpy()
-    
-    # Predict Q values of the next states for all actions
-    Q_next_ = model_tgt([state_next, np.ones_like(action_ohe)]).numpy()
-    Q_next_[game_over] = 0  # Q of terminal state is 0 by def.
-    
-    # Set Q target. We only run SGD updates for those actions taken.
-    # Hence, Q target for non-taken actions is set to 0
-    n = rewards.shape[1]
-    R_n = (gamma ** np.arange(n) * rewards).sum(axis=1)  # n-step forward return
-    Q_tgt = R_n + (gamma ** n) * Q_next_.max(axis=1)
-    Q_tgt = np.float32(action_ohe * Q_tgt[:, None])
-
-    # TD-error
-    td_err = np.abs(Q_tgt - Q_now).sum(axis=1)
-
-    # Run SGD update (train_on_batch() is faster than fit())
-    model.train_on_batch([state_now, action_ohe], Q_tgt, sample_weight=w_imps)
-    return td_err
-
-
 def fit_batch_DDQNn_PER(
-        model, model_tgt, action_space, gamma, state_now, action, rewards, 
-        game_over, state_next, w_imps, noisy_net=False, double_learn=False
-    ):
-    """Q-learning update on a batch of transitions.
-    Enables features:
+        model: tf.keras.Model, model_tgt: tf.keras.Model, action_space: dict, 
+        gamma: float, state_now: np.array, action: np.array, rewards: np.array, 
+        game_over: np.array, state_next: np.array, w_imps: np.array, 
+        noisy_net: bool = False, double_learn: bool = False
+    ) -> Tuple[np.array, float]:
+    """Q-learning update on a mini batch of transitions.
+    
+    Handles DQN variants:
         1. DQN: Deep Q-learning
         2. DDQN: Double DQN
         3. PER: Prioritized experience replay 
         4. Noisy Net layers TODO: reconfirm this is working as should
         5. N-step returns
-        6. Distributional Net TODO: implement this
-
-    Rewards: R[t+1:t+n] for computing n-step return
+        6. Dueling network
 
     Assumptions: 
         1. state(t) and state(t+n) do not cross a life lost or game-over
+
+    Args:
+        model: Online model, to train.
+        model_tgt: Target model.
+        action_space: Action space map.
+        gamma: Reward discount rate. 
+        state_now: Batch of current states (t).
+        action: Batch of actions taken at t.
+        rewards: Batch of R[t+1:t+n] for computing n-step return.
+        game_over: Batch of terminal state indicators.
+        state_next: Batch of next states (t+n).
+        w_imps: Importance sampling weights.
+        noisy_net: Indicator whether model is using noisy layers.
+        double_learn: Toogle whether to apply "Double Learning" algo.
+
+    Returns:
+        - Array of mini batch TD-errors.
+        - Composite loss.
     """
     # Reshape variables
     action_idx = np.array([action_space.index(a) for a in action], dtype='int32')  # Convert to indexed actions
@@ -537,11 +520,41 @@ def fit_batch_DDQNn_PER(
 
 
 def fit_batch_DDQNn_PER_DS(
-        model, model_tgt, action_space, gamma, state_now, action, rewards, 
-        game_over, state_next, w_imps, Z, Z_repN, dZ, V, noisy_net=False, 
-        double_learn=False
-    ):
-    """Q-learning update on a batch of transitions."""
+        model: tf.keras.Model, model_tgt: tf.keras.Model, action_space: dict, gamma: float, 
+        state_now: np.array, action: np.array, rewards: np.array, game_over: np.array, 
+        state_next: np.array, w_imps: np.array, Z: np.array, Z_repN: np.array, dZ: float, V: tuple, 
+        noisy_net: bool = False, double_learn: bool = False
+    ) -> Tuple[np.array, float]:
+    """Q-learning update on a mini batch of transitions.
+    
+    Handles DQN variants:
+        1. Distributional Network
+
+    Args:
+        model: Online model, to train.
+        model_tgt: Target model.
+        action_space: Action space map.
+        gamma: Reward discount rate. 
+        state_now: Batch of current states (t).
+        action: Batch of actions taken at t.
+        rewards: Batch of R[t+1:t+n] for computing n-step return.
+        game_over: Batch of terminal state indicators.
+        state_next: Batch of next states (t+n).
+        w_imps: Importance sampling weights.
+        Z: Domain of categorical distr.
+        Z_repN: Utility matrix of Z repeated (#Z) times horizontally.
+        dZ: Increment of Z values.
+        V: V_min, V_max.
+        noisy_net: Indicator whether model is using noisy layers.
+        double_learn: Toogle whether to apply "Double Learning" algo.
+
+    Assumptions: 
+        1. state(t) and state(t+n) do not cross a life lost or game-over
+    
+    Returns:
+        - Array of mini batch TD-errors.
+        - Composite loss.
+    """
     # Reshape variables
     action_idx = np.array([action_space.index(a) for a in action], dtype='int32')  # Convert to indexed actions
     state_now = np.stack(state_now)
@@ -568,7 +581,7 @@ def fit_batch_DDQNn_PER_DS(
         Q_next_tgt = Q_from_Z_distr(Z, p_next_tgt)
         Q_next_tgt[game_over] = 0
         p_next_tgt_max = p_next_tgt[range(batch_sz), Q_next_tgt.argmax(axis=1)]
-    
+
     n = rewards.shape[1]
     R_n = (gamma ** np.arange(n) * rewards).sum(axis=1)[:, None]  # n-step forward return
     TZ = R_n + (gamma ** n) * Z * ~game_over[:, None]
@@ -580,6 +593,5 @@ def fit_batch_DDQNn_PER_DS(
     p_now_pred, loss = train_on_batch(
         model, state_now, p_now_tgt, action_idx, sample_weight=w_imps
     )
-    p_now_pred = p_now_pred.numpy()[range(batch_sz), action_idx] # Remove actions that were not taken
     td_err = abs_td_error(p_now_pred, p_now_tgt, distr_net=True, Z=Z)
     return td_err, loss
