@@ -19,7 +19,9 @@ Enabled | Algorithm | Reference
 
 
 # Visualization
-Custom functions are written to output comprehensive animations of agent playing episodes during training, with details such as Q values, Z distribution and activation maps.
+
+## 1. Agent Play Viz
+Custom functions are written to output comprehensive animations of agent playing episodes during training, with details such as Q values, Value and Advantage stream values, Z distribution and activation maps.
 The following shows a (partially) trained DQN agent playing Space Invaders attaining a training score of 2145. Displayed are:
 1. **Left** Original Atari frame.
 2. **Right** Preprocessed frame as viewed by agent.
@@ -31,6 +33,8 @@ The following shows a (partially) trained DQN agent playing Space Invaders attai
 Note: saliency/activation maps can often be rather noisy, however some particular attentions stand out, such as agent focussing on the bonus (round) flying saucer.
 
 https://github.com/Djoren/rf-atari/assets/10808578/eeabd46e-c78d-457e-8565-ae24f1060cd5
+
+## 2. Train Statistics Viz
 
 
 ###
