@@ -22,7 +22,7 @@ Enabled | Algorithm | Reference
 
 # Visualization
 
-### 1. Agent play viz
+### 1. Agent play
 Custom functions are written to output comprehensive animations of agent playing episodes during training, with details such as Q values, Value and Advantage stream values, Z distribution and activation maps. Animation is generated from functions in utils.py.
 
 Example 1: Dueling agent
@@ -47,7 +47,7 @@ https://github.com/Djoren/rl-atari/assets/10808578/4f2144b0-5ab7-4d63-b2fd-85246
 
 
 
-### 2. Train statistics viz
+### 2. Train statistics
 Visual inspection of metrics during training is imperative to measure model performance, analyze agent behavior, 
 and predict progress and runtimes. First plot below displays statistics aggregated per train episode, showing total reward score,
 episode length (in terms of played frames), mean of max Q values, mean TD-errors and runtime.
