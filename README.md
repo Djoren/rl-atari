@@ -2,6 +2,8 @@
 Rl-atari implements a set of reinforcement learning algorithms to learn control policies for playing Atari games. <br>
 This implementation recreates the Deep Q-Networks (DQN) model and configuration as proposed first by Google DeepMind.<br>
 The following deep-RL variants and features are built out, the integrated combination of which is known as the Rainbow agent.
+
+Training these agents takes a very long time, bringing with it an extended turnaround to obtain (new) results. New progress and figures will be pushed as they come in.
 ###
 
 Enabled | Algorithm | Reference
@@ -20,8 +22,8 @@ Enabled | Algorithm | Reference
 
 # Visualization
 
-## 1. Agent Play Viz
-Custom functions are written to output comprehensive animations of agent playing episodes during training, with details such as Q values, Value and Advantage stream values, Z distribution and activation maps.
+### 1. Agent play viz
+Custom functions are written to output comprehensive animations of agent playing episodes during training, with details such as Q values, Value and Advantage stream values, Z distribution and activation maps. Animation is generated from functions in utils.py.
 The following shows a (partially) trained DQN agent playing Space Invaders attaining a training score of 2145. Displayed are:
 1. **Left** Original Atari frame.
 2. **Right** Preprocessed frame as viewed by agent.
@@ -34,7 +36,20 @@ Note: saliency/activation maps can often be rather noisy, however some particula
 
 https://github.com/Djoren/rf-atari/assets/10808578/eeabd46e-c78d-457e-8565-ae24f1060cd5
 
-## 2. Train Statistics Viz
+### 2. Train statistics viz
+Visual inspection of metrics during training is imperative to measure model performance, analyze agent behavior, 
+and predict progress and runtimes. First plot below displays statistics aggregated per train episode, showing total reward score,
+episode length (in terms of played frames), mean of max Q values, mean TD-errors and runtime.
+The second plots show distribution of actions taken over time.
+
+Plots are generated from functions in utils.py.
+
+![res](https://github.com/Djoren/rl-atari/assets/10808578/b515287e-fe02-4982-aeb5-96fdd09c803c)
+
+###
+![actions](https://github.com/Djoren/rl-atari/assets/10808578/78080a57-636b-4f19-a7b9-9873c76db789)
+
+
 
 
 ###
