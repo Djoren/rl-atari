@@ -24,6 +24,9 @@ Enabled | Algorithm | Reference
 
 ### 1. Agent play viz
 Custom functions are written to output comprehensive animations of agent playing episodes during training, with details such as Q values, Value and Advantage stream values, Z distribution and activation maps. Animation is generated from functions in utils.py.
+
+Example 1: Dueling agent
+
 The following shows a (partially) trained DQN agent playing Space Invaders attaining a training score of 2145. Displayed are:
 1. **Left** Original Atari frame.
 2. **Right** Preprocessed frame as viewed by agent.
@@ -35,6 +38,14 @@ The following shows a (partially) trained DQN agent playing Space Invaders attai
 Note: saliency/activation maps can often be rather noisy, however some particular attentions stand out, such as agent focussing on the bonus (round) flying saucer.
 
 https://github.com/Djoren/rf-atari/assets/10808578/eeabd46e-c78d-457e-8565-ae24f1060cd5
+
+Example 2: Distibutional agent
+
+Idem ditto as example 1, however the Q-values have been replaced with a categorical value distribution.
+
+https://github.com/Djoren/rl-atari/assets/10808578/4f2144b0-5ab7-4d63-b2fd-852462a9b60c
+
+
 
 ### 2. Train statistics viz
 Visual inspection of metrics during training is imperative to measure model performance, analyze agent behavior, 
