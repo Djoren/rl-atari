@@ -38,7 +38,7 @@ The following shows a (partially) trained DQN agent playing Space Invaders attai
 4. **Bottom** Q-values for each action.
 
 Note: 
-- Animaion is sped up to 60 fps.
+- Animation is sped up to 60 fps.
 - saliency/activation maps can often be rather noisy, however some particular attentions stand out, such as agent focussing on the bonus (round) flying saucer.
 
 
