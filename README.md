@@ -94,5 +94,5 @@ Example 2: of a large network with Dueling (V and A) streams, as well as distrib
 ###
 
 # Requirements
-See requirements yaml file.
+Conda builds environment from the yaml file. Poetry installs the exact requirements and dependencies from the .lock and .toml files.
 
