@@ -1,0 +1,5 @@
+name: rl-atari
+channels:
+  - defaults
+dependencies:
+  - python=3.11.7
