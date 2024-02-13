@@ -89,7 +89,8 @@ Example 2: of a large network with Dueling (V and A) streams, as well as distrib
 
 ###
 
-![output2](https://github.com/Djoren/rf-atari/assets/10808578/4843b2fe-c70e-47e8-9397-31a6bf672ece)
+![dddd](https://github.com/Djoren/rl-atari/assets/10808578/d59f1cdb-8868-4af6-bd3f-a4deea36a70c)
+
 
 ###
 
