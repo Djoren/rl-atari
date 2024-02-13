@@ -22,6 +22,11 @@ Enabled | Algorithm | Reference
 ###
 
 
+
+# Requirements
+Virtual env and deps were managed with Conda and Poetry resp.
+Conda builds environment from the yaml file. Poetry installs the exact requirements and dependencies from the .lock and .toml files.
+
 # Visualization
 
 ### 1. Agent play
@@ -94,6 +99,4 @@ Example 2: of a large network with Dueling (V and A) streams, as well as distrib
 
 ###
 
-# Requirements
-Conda builds environment from the yaml file. Poetry installs the exact requirements and dependencies from the .lock and .toml files.
 
